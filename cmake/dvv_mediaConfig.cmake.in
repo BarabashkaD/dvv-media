@@ -1,0 +1,16 @@
+@PACKAGE_INIT@
+
+# The version, with the release-stage label of a pre-release build (applications show it, e.g. in
+# --version).
+set(dvv_media_VERSION_STRING "@dvv_media_VERSION_STRING@")
+
+include(CMakeFindDependencyMacro)
+find_dependency(dvv_base @dvv_base_MIN_VERSION@)
+find_dependency(dvv_registry @dvv_registry_MIN_VERSION@)
+find_dependency(dvv_platform @dvv_platform_MIN_VERSION@)
+# dvv_gpu needs the pinned Vulkan-Headers of the third-party prefix in CMAKE_PREFIX_PATH.
+find_dependency(dvv_gpu @dvv_gpu_MIN_VERSION@)
+
+include("${CMAKE_CURRENT_LIST_DIR}/dvv_mediaTargets.cmake")
+
+check_required_components(dvv_media)
