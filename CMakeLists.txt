@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(dvv_media VERSION 0.1.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
+project(dvv_media VERSION 0.1.1 DESCRIPTION "dvv media layer" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label (user decision U-M4ORDER).
 set(dvv_media_VERSION_STRING "${PROJECT_VERSION}")
 
