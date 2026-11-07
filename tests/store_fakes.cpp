@@ -111,7 +111,7 @@ Task<Result<std::shared_ptr<IFrame>>> FakeConverter::run(detail::ConvertInput in
         input.desc, std::vector<ViewSpec>{view}, std::move(payload)));
 }
 
-void CountingExecutor::post(std::move_only_function<void()> work) {
+void CountingExecutor::post(dvv::MoveOnlyFunction<void()> work) {
     posts_.fetch_add(1, std::memory_order_relaxed);
     target_->post(std::move(work));
 }

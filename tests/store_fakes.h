@@ -151,7 +151,7 @@ private:
 class CountingExecutor final : public IExecutor {
 public:
     explicit CountingExecutor(IExecutor& target) noexcept : target_(&target) {}
-    void post(std::move_only_function<void()> work) override;
+    void post(dvv::MoveOnlyFunction<void()> work) override;
     [[nodiscard]] std::size_t posts() const noexcept {
         return posts_.load(std::memory_order_relaxed);
     }
