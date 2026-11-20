@@ -40,7 +40,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 #include "sources/file_read.h"
 #include "sources/uri_params.h"
 
@@ -422,15 +421,11 @@ private:
 
 class RawFileProvider final : public ISourceProvider, public Managed<RawFileProvider> {
 public:
-    RawFileProvider(CreationKey<ComponentRegistry> key, const ParameterValues& /*values*/) noexcept
+    explicit RawFileProvider(CreationKey<ComponentRegistry> key) noexcept
         : Managed(std::move(key)) {}
 
     static ComponentInfo info() noexcept {
-        return {.id = "raw", .name = "Raw video file", .kind = Kind::Source, .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "raw", .name = "Raw video file", .version = 1};
     }
     static std::expected<void, Unavailable> probe(const Capabilities& /*caps*/) { return {}; }
 

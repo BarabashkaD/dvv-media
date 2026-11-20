@@ -33,7 +33,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 #include "patterns.h"
 #include "sources/uri_params.h"
 
@@ -179,19 +178,11 @@ private:
 
 class SyntheticProvider final : public ISourceProvider, public Managed<SyntheticProvider> {
 public:
-    SyntheticProvider(CreationKey<ComponentRegistry> key,
-                      const ParameterValues& /*values*/) noexcept
+    explicit SyntheticProvider(CreationKey<ComponentRegistry> key) noexcept
         : Managed(std::move(key)) {}
 
     static ComponentInfo info() noexcept {
-        return {.id = "synthetic",
-                .name = "Synthetic test patterns",
-                .kind = Kind::Source,
-                .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "synthetic", .name = "Synthetic test patterns", .version = 1};
     }
     static std::expected<void, Unavailable> probe(const Capabilities& /*caps*/) { return {}; }
 

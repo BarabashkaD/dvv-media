@@ -1,8 +1,9 @@
 #pragma once
 
 // Three scripted source providers for the factory tests: fake_a, fake_b and fake_c. Each is a
-// Kind::Source component for the schemes "fake" and "file" that needs the capability "fake". Only
-// dvv_media_factory_tests links them, so they never compete with the real providers.
+// component registered for ISourceProvider, for the schemes "fake" and "file" that needs the
+// capability "fake". Only dvv_media_factory_tests links them, so they never compete with the real
+// providers.
 
 #include <cstddef>
 #include <optional>

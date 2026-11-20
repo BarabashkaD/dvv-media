@@ -46,7 +46,7 @@ int main() {
     }
     // dvv::media_sources is linked as a component library: its providers are registered.
     const auto registry = dvv::ComponentRegistry::create(dvv::Capabilities{});
-    const auto sources = registry->list(dvv::Kind::Source);
+    const auto sources = registry->list<dvv::media::ISourceProvider>();
     if (std::ranges::none_of(sources, [](const dvv::ComponentStatus& status) {
             return status.info.id == "synthetic";
         })) {

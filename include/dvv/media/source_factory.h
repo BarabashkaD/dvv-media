@@ -2,7 +2,7 @@
 
 // Source providers and the source factory (M2 design §4.5, §5.5; spec §7.2).
 //
-// A provider is a Kind::Source component implementing ISourceProvider. SourceFactory creates one
+// A provider is a component registered for ISourceProvider. SourceFactory creates one
 // instance of every available provider, picks the provider for a request (scheme, file head,
 // ?impl=, confidences) and lets it open the source. A provider constructs its source with
 // SourceFactory::issueKey<T>(std::move(ticket)): the OpenTicket it was handed is the only way to
@@ -107,8 +107,8 @@ struct OpenContext {
     IExecutor& io;
 };
 
-// Component kind Source (spec §9.3). Implementations are stateless: match() and open() may run
-// concurrently, and a source never keeps a pointer to its provider.
+// The interface of the source-provider components (spec §9.3). Implementations are stateless:
+// match() and open() may run concurrently, and a source never keeps a pointer to its provider.
 class ISourceProvider {
 public:
     ISourceProvider() = default;
@@ -139,9 +139,10 @@ class SourceFactory final : public Managed<SourceFactory> {
 public:
     using OpenResult = std::variant<std::unique_ptr<ISource>, Ambiguous>;
 
-    // Own authority. Creates one instance of every available Kind::Source component of
-    // `registry`; one that fails to be created is logged and skipped. Errc::Internal for a null
-    // `io`; Errc::Unsupported "no source providers registered" when no provider is left.
+    // Own authority. Creates one instance of every available component registered for
+    // ISourceProvider in `registry`; one that fails to be created is logged and skipped.
+    // Errc::Internal for a null `io`; Errc::Unsupported "no source providers registered" when no
+    // provider is left.
     [[nodiscard]] static Result<std::unique_ptr<SourceFactory>> create(
         ComponentRegistry& registry, std::shared_ptr<IExecutor> io,
         std::source_location where = std::source_location::current());
@@ -197,6 +198,7 @@ CreationKey<SourceFactory> SourceFactory::issueKey(OpenTicket&& ticket) {
 
 }  // namespace dvv::media
 
+// Deprecated (removed in 1.0.0): the registry lists source providers by interface.
 template <>
 struct dvv::InterfaceKind<dvv::media::ISourceProvider>
     : std::integral_constant<dvv::Kind, dvv::Kind::Source> {};

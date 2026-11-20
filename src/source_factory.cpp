@@ -125,11 +125,11 @@ Result<std::unique_ptr<SourceFactory>> SourceFactory::create(ComponentRegistry& 
         return makeError(Errc::Internal, "SourceFactory: no io executor");
     }
     std::vector<ProviderEntry> providers;
-    for (const ComponentStatus& status : registry.list(Kind::Source)) {
+    for (const ComponentStatus& status : registry.list<ISourceProvider>()) {
         if (!status.available()) {
             continue;
         }
-        auto provider = registry.createComponent<ISourceProvider>(status.info.id, {}, where);
+        auto provider = registry.createComponent<ISourceProvider>(status.info.id, where);
         if (!provider) {
             DVV_LOG_WARN("source provider '{}' is skipped: {}", status.info.id,
                          provider.error().describe());

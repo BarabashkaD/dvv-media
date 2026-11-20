@@ -19,7 +19,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 
 namespace dvv::media::fakes {
 
@@ -52,16 +51,10 @@ private:
 template <std::size_t N>
 class FakeProvider final : public ISourceProvider, public Managed<FakeProvider<N>> {
 public:
-    FakeProvider(CreationKey<ComponentRegistry> key, const ParameterValues& /*values*/) noexcept
+    explicit FakeProvider(CreationKey<ComponentRegistry> key) noexcept
         : Managed<FakeProvider<N>>(std::move(key)) {}
 
-    static ComponentInfo info() noexcept {
-        return {.id = IDS[N], .name = IDS[N], .kind = Kind::Source, .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
-    }
+    static ComponentInfo info() noexcept { return {.id = IDS[N], .name = IDS[N], .version = 1}; }
     static std::expected<void, Unavailable> probe(const Capabilities& caps) {
         return require(caps, {"fake"});
     }
