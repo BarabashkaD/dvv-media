@@ -18,6 +18,7 @@
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
+#include "dvv/media/source.h"
 #include "dvv/media/types.h"
 
 namespace media = dvv::media;
@@ -136,6 +137,34 @@ TEST_CASE("TierStats keeps its 0.1.1 initialisers") {
     CHECK(designated.pending == 0);
     CHECK(positional.views == 3);
     CHECK(designated.views == 3);
+}
+
+static_assert(media::FixedFields::all().covers(media::FixedFields{.format = true}) &&
+              !media::FixedFields{}.covers(media::FixedFields::all()));
+
+// Additivity: the 0.1.1 initialisers of SourceInfo keep compiling (warnings are errors) until
+// 1.0.0.
+TEST_CASE("SourceInfo keeps its 0.1.1 initialisers") {
+    const media::FrameDesc desc{};
+    const media::Rational fps{25, 1};
+    const media::SourceInfo short_form{desc, fps};
+    const media::SourceInfo positional{desc,
+                                       fps,
+                                       10,
+                                       media::SourceAccess::RandomCheap,
+                                       true,
+                                       "raw:x",
+                                       "raw",
+                                       {},
+                                       "",
+                                       {},
+                                       media::FileHint{},
+                                       ""};
+    const media::SourceInfo designated{.desc = desc, .fps = fps, .clipFile = "c"};
+    CHECK(short_form.fixed == media::FixedFields{});
+    CHECK(positional.fixed == media::FixedFields{});
+    CHECK(designated.fixed == media::FixedFields{});
+    CHECK(designated.clipFile == "c");
 }
 
 TEST_CASE("colour interning") {

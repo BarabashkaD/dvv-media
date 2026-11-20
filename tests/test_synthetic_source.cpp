@@ -75,6 +75,7 @@ TEST_CASE("synthetic: deterministic") {
     CHECK(two != frameBytes(harness, first, 3));
     CHECK(first->info().deterministic);
     CHECK(first->info().access == media::SourceAccess::RandomCheap);
+    CHECK(first->info().fixed == media::FixedFields{});
 }
 
 TEST_CASE("synthetic: every catalogue format produces in-range code values") {

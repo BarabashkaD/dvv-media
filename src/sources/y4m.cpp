@@ -308,6 +308,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     info.deterministic = true;
     info.resolvedUri = formatUri(resolved);
     info.provider = "y4m";
+    info.fixed = FixedFields::all();
     if (const std::uint64_t rest = payload % stride; rest > 0) {
         info.warnings.push_back(std::format("{} trailing bytes ignored", rest));
     }

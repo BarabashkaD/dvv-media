@@ -170,6 +170,14 @@ TEST_CASE("y4m: header with every tag") {
     CHECK(outside.error().code == dvv::Errc::Internal);
 }
 
+TEST_CASE("a Y4M source fixes format, size and rate") {
+    const TemporaryDirectory directory;
+    const fs::path path = writeFull(directory.path());
+    SourceHarness harness;
+    const auto source = harness.open(dvv::pathText(path));
+    CHECK(source->info().fixed == media::FixedFields::all());
+}
+
 TEST_CASE("y4m: every C mapping") {
     struct Mapping {
         std::string_view colourspace;

@@ -178,6 +178,7 @@ TEST_CASE("raw: query size and format") {
           media::FrameDesc{.format = idOf(FORMAT), .colour = 0, .width = WIDTH, .height = HEIGHT});
     CHECK(info.fps == media::Rational{25, 1});
     CHECK(info.access == media::SourceAccess::RandomCheap);
+    CHECK(info.fixed == media::FixedFields{});
     CHECK(info.warnings.empty());
     CHECK(frameBytes(harness, source, 1) == packedFrame(FORMAT, WIDTH, HEIGHT, SEED, 1));
 }

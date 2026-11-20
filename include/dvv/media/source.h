@@ -26,18 +26,32 @@ struct Entry;
 
 enum class SourceAccess : std::uint8_t { RandomCheap, RandomCostly, Sequential };
 
+// Which format fields the source's own header, container or graph fixes. An application must not
+// offer to change a fixed field: a reopen would ignore or refuse it.
+struct FixedFields {
+    bool format = false;
+    bool size = false;
+    bool fps = false;
+    [[nodiscard]] static constexpr FixedFields all() noexcept { return {true, true, true}; }
+    // True when every field fixed in `other` is fixed here.
+    [[nodiscard]] constexpr bool covers(const FixedFields& other) const noexcept {
+        return (format || !other.format) && (size || !other.size) && (fps || !other.fps);
+    }
+    friend constexpr bool operator==(const FixedFields&, const FixedFields&) = default;
+};
+
 struct SourceInfo {
-    FrameDesc desc;
-    Rational fps;
-    std::optional<std::int64_t> frameCount;  // nullopt = unbounded generator
+    FrameDesc desc{};
+    Rational fps{};
+    std::optional<std::int64_t> frameCount{};  // nullopt = unbounded generator
     SourceAccess access = SourceAccess::RandomCheap;
     bool deterministic = true;
-    std::string resolvedUri;            // includes the format: reopens without guessing
-    std::string provider;               // component id
-    std::vector<std::string> warnings;  // e.g. "N trailing bytes ignored"
+    std::string resolvedUri{};            // includes the format: reopens without guessing
+    std::string provider{};               // component id
+    std::vector<std::string> warnings{};  // e.g. "N trailing bytes ignored"
     // File sources: FileReader::modeText(), "unbuffered", "buffered" or "buffered (fallback:
     // <reason>)" (M3.1 U-IO2); empty otherwise (D18 bench).
-    std::string reader;
+    std::string reader{};
     // Info-level lines for the log, not the infobar (D5 design §3.5), e.g. "clip.yuv.json
     // describes clip.yuv (it wins over the file name)".
     std::vector<std::string> notes{};
@@ -50,6 +64,7 @@ struct SourceInfo {
     // The UTF-8 path of the clip description used (raw: clip=@<file> as given, or the sidecar
     // <file>.<ext>.json); empty when none.
     std::string clipFile{};
+    FixedFields fixed{};  // last; none for raw and synthetic sources
 };
 
 // Made by the store for one produce() call.
