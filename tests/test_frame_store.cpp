@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,7 @@ using dvv::media::FrameStore;
 using dvv::media::HostPlanesB;
 using dvv::media::LayoutPolicy;
 using dvv::media::Lease;
+using dvv::media::LeaseInfo;
 using dvv::media::LeaseKind;
 using dvv::media::MemKind;
 using dvv::media::OriginId;
@@ -623,6 +625,160 @@ TEST_SUITE("store") {
                 static_cast<void>(take(*store, {origin, index}, hostView, *requester));
             }
             store.reset();
+            source.reset();
+        }
+        CHECK(dvv::LifetimeRegistry::instance().liveCount() == baseline);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "share is a counted lease with its own location") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        const auto line = std::source_location::current().line() + 1;
+        ReadLease shared = lease.share();
+        REQUIRE(shared);
+        CHECK(shared.key() == lease.key());
+        CHECK(shared.view() == lease.view());
+        CHECK(planesOf(shared).planes[0].data() == planesOf(lease).planes[0].data());
+        const std::vector<LeaseInfo> leases = store->outstandingLeases();
+        REQUIRE(leases.size() == 2);
+        CHECK(std::ranges::count_if(
+                  leases, [&](const LeaseInfo& info) { return info.where.line() == line; }) == 1);
+        CHECK(store->stats().leases == 2);
+        requireInvariants(*store);
+        CHECK(store->stats().frames == 1);
+
+        lease = ReadLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 1);
+        CHECK(store->stats().leases == 1);
+
+        shared = ReadLease{};
+        CHECK(store->outstandingLeases().empty());
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a pin share counts as a pin") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        PinLease pin = syncWait(store->pin({origin, 0}, hostView, *requester)).value();
+        PinLease shared = pin.share();
+        CHECK(shared);
+        const auto stats = store->stats();
+        CHECK(stats.pins == 2);
+        CHECK(stats.leases == 0);
+        const std::vector<LeaseInfo> leases = store->outstandingLeases();
+        CHECK(leases.size() == 2);
+        CHECK(std::ranges::all_of(
+            leases, [](const LeaseInfo& info) { return info.kind == LeaseKind::Pin; }));
+        requireInvariants(*store);
+
+        pin = PinLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 1);
+        shared = PinLease{};
+        CHECK(store->stats().pins == 0);
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "an empty lease shares to an empty lease") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const ReadLease held = take(*store, {origin, 0}, hostView, *requester);
+        const std::size_t before = store->outstandingLeases().size();
+        CHECK_FALSE(ReadLease{}.share());
+        CHECK_FALSE(PinLease{}.share());
+        CHECK(store->outstandingLeases().size() == before);
+        CHECK(store->stats().leases == 1);
+        CHECK(store->stats().pins == 0);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a share outlives detach") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        store->detach(origin);
+        CHECK(store->stats().frames == 0);
+        ReadLease shared = lease.share();
+        REQUIRE(shared);
+        CHECK(store->outstandingLeases().size() == 2);
+        CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+        lease = ReadLease{};
+        CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+        shared = ReadLease{};
+        CHECK(store->outstandingLeases().empty());
+        CHECK(store->stats().leases == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "share races with trim and release") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        constexpr int SHARERS = 2;
+        constexpr int ROUNDS = 1000;
+        std::atomic<int> failures{0};
+        std::atomic<int> done{0};
+        {
+            std::jthread trimmer([&] {
+                for (int round = 0; round < ROUNDS || done.load() < SHARERS; ++round) {
+                    store->trim(store->hostDomain(), 0);
+                }
+            });
+            std::vector<std::jthread> sharers;
+            sharers.reserve(SHARERS);
+            for (int sharer = 0; sharer < SHARERS; ++sharer) {
+                sharers.emplace_back([&] {
+                    ReadLease previous;
+                    for (int round = 0; round < ROUNDS; ++round) {
+                        ReadLease next = lease.share();
+                        const auto* planes = std::get_if<HostPlanesB>(&next.binding());
+                        if (!next || planes == nullptr || !holdsPattern(planes->planes[0], 0)) {
+                            failures.fetch_add(1);
+                        }
+                        previous = std::move(next);  // drops the share of the previous round
+                    }
+                    done.fetch_add(1);
+                });
+            }
+        }
+        CHECK(failures.load() == 0);
+        requireInvariants(*store);
+        CHECK(store->stats().leases == 1);
+        CHECK(store->outstandingLeases().size() == 1);
+
+        lease = ReadLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a share keeps the store alive") {
+        const std::size_t baseline = dvv::LifetimeRegistry::instance().liveCount();
+        {
+            auto store = makeStore();
+            auto source = makeSource();
+            const OriginId origin = store->attach(source).value();
+            ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+            ReadLease shared = lease.share();
+            const std::weak_ptr<FrameStore> weak = store;
+            lease = ReadLease{};
+            store.reset();
+            CHECK_FALSE(weak.expired());
+            REQUIRE(shared);
+            CHECK(shared.desc() == desc);
+            CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+            shared = ReadLease{};
+            CHECK(weak.expired());
             source.reset();
         }
         CHECK(dvv::LifetimeRegistry::instance().liveCount() == baseline);

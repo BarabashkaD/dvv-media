@@ -68,6 +68,11 @@ public:
     [[nodiscard]] Fidelity fidelity() const noexcept;
     [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
     [[nodiscard]] SyncPoint ready() const noexcept;  // M2: always reached (D10)
+    // A second lease on the same entry and view, counted like any lease (one more reader for Read,
+    // one more pin for Pin) and listed in outstandingLeases() with `where`. Takes the store mutex.
+    // An empty lease gives an empty lease (no lock). Valid also after the origin was detached: the
+    // entry lives while any lease holds it.
+    [[nodiscard]] Lease share(std::source_location where = std::source_location::current()) const;
 
 private:
     friend class FrameStore;
@@ -188,6 +193,8 @@ private:
                                                   const ViewSpec& want);
     [[nodiscard]] detail::LeaseCore finishLease(std::shared_ptr<detail::Entry> entry, ViewSpec view,
                                                 LeaseKind kind, std::source_location where);
+    [[nodiscard]] detail::LeaseCore shareLease(const detail::LeaseCore& core,
+                                               std::source_location where);
     // An exception in the completion path terminates: it would strand the waiters and poison the
     // key.
     [[nodiscard]] Task<Result<void>> runPlan(detail::Plan plan) noexcept;

@@ -205,8 +205,9 @@ struct StoreAccess {
     // Internal with the first violated rule: per tier, bytes == the sum of its counted entries
     // and every linked entry is published, in the index and counted; no empty record; per record,
     // at most one non-failed original and no two non-failed entries with the same planned view
-    // and fidelity; per entry, read leases <= readers and pin leases == pins. Every rule holds
-    // whenever the mutex is free, so it may also run while other threads acquire, release and trim.
+    // and fidelity; per entry, read leases <= readers and pin leases == pins (a share is a lease).
+    // Every rule holds whenever the mutex is free, so it may also run while other threads acquire,
+    // release and trim.
     // A lease is attributed to the in-index entry of its key that offers its view, so call it while
     // no lease of an evicted or detached entry is held.
     [[nodiscard]] static Result<void> checkInvariants(const FrameStore& store);

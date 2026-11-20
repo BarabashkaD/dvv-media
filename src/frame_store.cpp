@@ -239,6 +239,13 @@ template <LeaseKind K>
 SyncPoint Lease<K>::ready() const noexcept {
     return core_.entry->ready;
 }
+template <LeaseKind K>
+Lease<K> Lease<K>::share(std::source_location where) const {
+    if (!*this) {
+        return Lease{};
+    }
+    return Lease(core_.store->shareLease(core_, where));
+}
 
 // Every member defined outside the class is defined above these lines (MSVC C4661).
 template class Lease<LeaseKind::Read>;
@@ -590,6 +597,25 @@ detail::LeaseCore FrameStore::finishLease(std::shared_ptr<detail::Entry> entry, 
             .binding = std::move(binding),
             .id = id,
             .kind = kind};
+}
+
+// finishLease's steps for a lease that already holds its entry: no reader was reserved, and the
+// view and binding are the lease's own.
+detail::LeaseCore FrameStore::shareLease(const detail::LeaseCore& core,
+                                         std::source_location where) {
+    detail::LeaseCore shared = core;  // copied before anything is counted
+    detail::Entry& entry = *shared.entry;
+    const std::scoped_lock lock(state_->mutex);
+    shared.id = state_->nextLease;
+    state_->leases.emplace(shared.id, LeaseInfo{entry.key, shared.view, shared.kind, where});
+    if (shared.kind == LeaseKind::Pin) {
+        ++entry.pins;
+    } else {
+        ++entry.readers;
+    }
+    ++state_->nextLease;
+    touchLocked(entry);
+    return shared;
 }
 
 Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const ViewSpec& want,
