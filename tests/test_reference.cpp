@@ -53,7 +53,7 @@ media::CodeValues noise(media::FormatId id, std::uint32_t width, std::uint32_t h
 
 std::vector<std::byte> packOk(const media::CodeValues& values) {
     auto bytes = media::pack(values);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().message);
+    REQUIRE_MESSAGE(bytes.has_value(), (bytes.has_value() ? std::string{} : bytes.error().message));
     return *bytes;
 }
 
@@ -217,7 +217,8 @@ TEST_CASE("unpacked planes equal packing in the unpacked format") {
         REQUIRE(unpacked_frame.has_value());
         std::vector<std::byte> planes(unpacked_frame->bytes);
         const auto result = media::unpackToPlanes(id, width, height, packOk(x), planes);
-        REQUIRE_MESSAGE(result.has_value(), result.error().message);
+        REQUIRE_MESSAGE(result.has_value(),
+                        (result.has_value() ? std::string{} : result.error().message));
         CHECK(
             planes ==
             packOk(media::CodeValues{

@@ -57,9 +57,11 @@ std::vector<std::byte> packedFrame(std::string_view format, std::uint32_t width,
                                    std::uint32_t height, std::uint64_t seed, std::int64_t index) {
     const auto values =
         detail::generate(detail::Pattern::Noise, idOf(format), width, height, seed, index);
-    REQUIRE_MESSAGE(values.has_value(), values.error().describe());
+    REQUIRE_MESSAGE(values.has_value(),
+                    (values.has_value() ? std::string{} : values.error().describe()));
     auto bytes = media::pack(*values);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().describe());
+    REQUIRE_MESSAGE(bytes.has_value(),
+                    (bytes.has_value() ? std::string{} : bytes.error().describe()));
     return *bytes;
 }
 
@@ -97,7 +99,8 @@ std::vector<std::byte> frameBytes(SourceHarness& harness,
                                   const std::shared_ptr<media::ISource>& source,
                                   std::int64_t index) {
     auto bytes = harness.originalBytes(source, index);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().describe());
+    REQUIRE_MESSAGE(bytes.has_value(),
+                    (bytes.has_value() ? std::string{} : bytes.error().describe()));
     return *bytes;
 }
 
@@ -115,9 +118,11 @@ media::Match rawMatch(std::string_view uri, std::optional<media::FormatHint> hin
     INFO(std::string(uri));
     const auto registry = dvv::ComponentRegistry::create(dvv::Capabilities{});
     auto provider = registry->createComponent<media::ISourceProvider>("raw");
-    REQUIRE_MESSAGE(provider.has_value(), provider.error().describe());
+    REQUIRE_MESSAGE(provider.has_value(),
+                    (provider.has_value() ? std::string{} : provider.error().describe()));
     auto parsed = dvv::parseUri(uri);
-    REQUIRE_MESSAGE(parsed.has_value(), parsed.error().describe());
+    REQUIRE_MESSAGE(parsed.has_value(),
+                    (parsed.has_value() ? std::string{} : parsed.error().describe()));
     const media::SourceRequest request{.uri = std::move(*parsed),
                                        .hint = hint,
                                        .fileReads = platform::FileReadMode::Auto,
@@ -149,11 +154,13 @@ TEST_CASE("raw: a truncated frame is Io") {
     for (const FileReadCase& mode : fileReadCases()) {
         CAPTURE(mode.reader);
         auto reader = platform::FileReader::open(path, mode.mode);
-        REQUIRE_MESSAGE(reader.has_value(), reader.error().describe());
+        REQUIRE_MESSAGE(reader.has_value(),
+                        (reader.has_value() ? std::string{} : reader.error().describe()));
         CHECK(reader->modeText() == mode.reader);
         const detail::FrameRead plan = detail::planFrameRead(50, 80, 0, reader->alignment());
         auto memory = platform::allocateAligned(plan.rangeBytes, reader->alignment());
-        REQUIRE_MESSAGE(memory.has_value(), memory.error().describe());
+        REQUIRE_MESSAGE(memory.has_value(),
+                        (memory.has_value() ? std::string{} : memory.error().describe()));
         const auto read = detail::readFrame(
             *reader, plan, std::span(memory->get(), plan.rangeBytes), 3, dvv::pathText(path));
         REQUIRE_FALSE(read.has_value());
@@ -176,11 +183,19 @@ TEST_CASE("raw: query size and format") {
     CHECK(info.frameCount == 3);
     CHECK(info.desc ==
           media::FrameDesc{.format = idOf(FORMAT), .colour = 0, .width = WIDTH, .height = HEIGHT});
-    CHECK(info.fps == media::FALLBACK_FPS);
     CHECK(info.access == media::SourceAccess::RandomCheap);
     CHECK(info.fixed == media::FixedFields{});
     CHECK(info.warnings.empty());
     CHECK(frameBytes(harness, source, 1) == packedFrame(FORMAT, WIDTH, HEIGHT, SEED, 1));
+}
+
+TEST_CASE("a raw file without fps reports FALLBACK_FPS") {
+    const TemporaryDirectory directory;
+    const std::string uri =
+        dvv::pathText(writeDefault(directory.path())) + "?fmt=yuv420p10le&size=33x17";
+    SourceHarness harness;
+    const auto source = harness.open(uri);
+    CHECK(source->info().fps == media::FALLBACK_FPS);
 }
 
 TEST_CASE("raw: file-name detection") {
@@ -200,7 +215,8 @@ TEST_CASE("raw: file-name detection") {
     // Size only: the format is a guess, so the factory asks.
     const fs::path size_only = writeDefault(directory.path(), "clip_33x17.yuv");
     auto opened = harness.tryOpen(dvv::pathText(size_only));
-    REQUIRE_MESSAGE(opened.has_value(), opened.error().describe());
+    REQUIRE_MESSAGE(opened.has_value(),
+                    (opened.has_value() ? std::string{} : opened.error().describe()));
     const auto* ambiguous = std::get_if<media::Ambiguous>(&*opened);
     REQUIRE(ambiguous != nullptr);
     REQUIRE(ambiguous->candidates.size() == 1);

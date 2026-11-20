@@ -118,7 +118,8 @@ TEST_SUITE("store") {
         {
             const Result<ReadLease> lease =
                 syncWait(store->acquire(key, dvv::media::displayView(DEVICE), *requester));
-            REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+            REQUIRE_MESSAGE(lease.has_value(),
+                            (lease.has_value() ? std::string{} : lease.error().describe()));
             CHECK(lease->fidelity() == Fidelity::Derived);
             CHECK(lease->view().format == dvv::media::displayFormat());
             CHECK(lease->view().colour == dvv::media::displayColour());
@@ -155,7 +156,8 @@ TEST_SUITE("store") {
             const OriginId origin = store->attach(makeSource()).value();
             const Result<ReadLease> lease =
                 syncWait(store->acquire({origin, 0}, dvv::media::displayView(DEVICE), *requester));
-            REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+            REQUIRE_MESSAGE(lease.has_value(),
+                            (lease.has_value() ? std::string{} : lease.error().describe()));
             CHECK(store->stats().creations == 5);
             requireInvariants(*store);
         }

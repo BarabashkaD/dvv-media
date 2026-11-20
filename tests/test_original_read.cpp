@@ -7,7 +7,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 #include "dvv/base/error.h"
@@ -60,10 +59,12 @@ struct HostStoreCase {
     explicit HostStoreCase(FrameDesc frame) : desc(frame) {
         pool = dvv::ExecutorFactory::makeThreadPool(2).value();
         auto made = FrameStore::create({.cpu = pool, .io = pool});
-        REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+        REQUIRE_MESSAGE(made.has_value(),
+                        (made.has_value() ? std::string{} : made.error().describe()));
         store = std::move(*made);
         auto attached = store->attach(std::make_shared<PackedSource>(desc, 3, SEED));
-        REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+        REQUIRE_MESSAGE(attached.has_value(),
+                        (attached.has_value() ? std::string{} : attached.error().describe()));
         origin = *attached;
     }
 
@@ -122,11 +123,13 @@ TEST_CASE("original read: a host-only store unpacks on the CPU") {
         SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto read = test.read(1);
-            REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+            REQUIRE_MESSAGE(read.has_value(),
+                            (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Lossless);
             CHECK(read->lease().view().format == dvv::media::unpackedFormat(desc.format));
             const auto expected = packedPlanes(desc.format, desc.width, desc.height, SEED, 1);
-            REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+            REQUIRE_MESSAGE(expected.has_value(),
+                            (expected.has_value() ? std::string{} : expected.error().describe()));
             CHECK(concatenated(planesOf(*read)) == *expected);
             const auto stats = test.store->stats();
             CHECK(runsOf(stats, "Produce") == 1);
@@ -147,11 +150,13 @@ TEST_CASE("original read: requireExact returns the original bytes") {
         SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto read = test.read(1, true);
-            REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+            REQUIRE_MESSAGE(read.has_value(),
+                            (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Exact);
             CHECK(read->lease().view().format == desc.format);
             const auto expected = packedOriginal(desc.format, desc.width, desc.height, SEED, 1);
-            REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+            REQUIRE_MESSAGE(expected.has_value(),
+                            (expected.has_value() ? std::string{} : expected.error().describe()));
             CHECK(concatenated(planesOf(*read)) == *expected);
             CHECK(runsOf(test.store->stats(), "CpuUnpack") == 0);
         }
@@ -163,10 +168,12 @@ TEST_CASE("original read: a second read is a hit") {
         SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto first = test.read(1);
-            REQUIRE_MESSAGE(first.has_value(), first.error().describe());
+            REQUIRE_MESSAGE(first.has_value(),
+                            (first.has_value() ? std::string{} : first.error().describe()));
             const auto before = test.store->stats();
             const auto second = test.read(1);
-            REQUIRE_MESSAGE(second.has_value(), second.error().describe());
+            REQUIRE_MESSAGE(second.has_value(),
+                            (second.has_value() ? std::string{} : second.error().describe()));
             const auto after = test.store->stats();
             CHECK(after.hits == before.hits + 1);
             CHECK(runsOf(after, "CpuUnpack") == 1);

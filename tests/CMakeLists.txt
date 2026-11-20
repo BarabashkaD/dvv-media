@@ -97,7 +97,8 @@ if(DVV_SANITIZE STREQUAL "thread")
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
 endif()
 add_executable(dvv_media_gpu_tests
-    gpu_main.cpp gpu_fixture.cpp gpu_test_store.cpp gpu_test_to_display.cpp gpu_test_unpack.cpp)
+    gpu_main.cpp gpu_fixture.cpp gpu_test_store.cpp gpu_test_to_display.cpp gpu_test_unpack.cpp
+    store_fakes.cpp)
 target_link_libraries(dvv_media_gpu_tests PRIVATE dvv::media doctest::doctest)
 target_include_directories(dvv_media_gpu_tests PRIVATE ${dvv_media_SOURCE_DIR}/src)
 target_compile_definitions(dvv_media_gpu_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)

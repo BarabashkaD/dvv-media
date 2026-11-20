@@ -52,13 +52,13 @@ media::FormatId idOf(std::string_view name) {
 
 json::Value parseOk(std::string_view text) {
     auto value = json::parse(text);
-    REQUIRE_MESSAGE(value.has_value(), value.error().message);
+    REQUIRE_MESSAGE(value.has_value(), (value.has_value() ? std::string{} : value.error().message));
     return *value;
 }
 
 media::FormatId loadOk(const json::Value& value) {
     auto id = media::formatFromJson(value);
-    REQUIRE_MESSAGE(id.has_value(), id.error().message);
+    REQUIRE_MESSAGE(id.has_value(), (id.has_value() ? std::string{} : id.error().message));
     return *id;
 }
 
@@ -89,7 +89,8 @@ media::FormatId loadMyY210() {
 media::CodeValues noise(media::FormatId id, std::uint32_t width, std::uint32_t height,
                         std::uint64_t seed) {
     auto values = detail::generate(detail::Pattern::Noise, id, width, height, seed, 0);
-    REQUIRE_MESSAGE(values.has_value(), values.error().message);
+    REQUIRE_MESSAGE(values.has_value(),
+                    (values.has_value() ? std::string{} : values.error().message));
     return *values;
 }
 

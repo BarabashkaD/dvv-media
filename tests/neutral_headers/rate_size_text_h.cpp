@@ -1,4 +1,4 @@
-// Compile-only check (spec §6.10): rate_size_text.h includes no Vulkan header.
+// Compile-only check (spec §6.9): rate_size_text.h includes no Vulkan header.
 #include "dvv/media/rate_size_text.h"
 
 #if defined(VULKAN_CORE_H_)

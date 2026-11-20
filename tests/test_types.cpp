@@ -272,7 +272,7 @@ TEST_CASE("colour interning is thread-safe and references stay valid") {
     CHECK(first == p0);
 }
 
-TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
+TEST_CASE("pathFromText keeps non-ASCII file names") {
     const std::string name = "Grüße-日本-🎞.yuv";
     std::random_device random;
     const fs::path dir =
@@ -280,7 +280,7 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
         ("dvv_media_test_types_" + std::to_string(random()) + "_" + std::to_string(random()));
     REQUIRE(fs::create_directory(dir));
     {
-        std::ofstream file(dir / media::pathFromUtf8(name), std::ios::binary);
+        std::ofstream file(dir / dvv::pathFromText(name), std::ios::binary);
         REQUIRE(file);
         file.write("abc", 3);
     }
@@ -290,7 +290,7 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
         entries.push_back(entry.path());
     }
     REQUIRE(entries.size() == 1);
-    CHECK(media::utf8FromPath(entries[0].filename()) == name);
+    CHECK(dvv::pathText(entries[0].filename()) == name);
     CHECK(fs::file_size(entries[0]) == 3);
 
     std::error_code error;

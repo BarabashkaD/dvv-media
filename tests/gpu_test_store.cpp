@@ -2,19 +2,15 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -83,10 +79,12 @@ struct GpuStore {
                                         .io = pool,
                                         .gpu = test.context().shared_from_this(),
                                         .deviceBudget = device_budget});
-        REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+        REQUIRE_MESSAGE(made.has_value(),
+                        (made.has_value() ? std::string{} : made.error().describe()));
         store = std::move(*made);
         auto attached = store->attach(std::make_shared<PackedSource>(desc, frames, SEED));
-        REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+        REQUIRE_MESSAGE(attached.has_value(),
+                        (attached.has_value() ? std::string{} : attached.error().describe()));
         origin = *attached;
         REQUIRE(store->stagingDomain().has_value());
         REQUIRE(store->deviceDomain().has_value());
@@ -108,7 +106,8 @@ struct GpuStore {
     [[nodiscard]] ReadLease take(std::int64_t index, const ViewSpec& want,
                                  dvv::IExecutor& resume_on) const {
         dvv::Result<ReadLease> lease = syncWait(store->acquire({origin, index}, want, resume_on));
-        REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+        REQUIRE_MESSAGE(lease.has_value(),
+                        (lease.has_value() ? std::string{} : lease.error().describe()));
         return std::move(*lease);
     }
 
@@ -196,18 +195,6 @@ private:
     media::test::Gate* gate_;
 };
 
-// Polls every 1 ms for up to 10 s; true when the predicate became true (no REQUIRE: helper
-// threads call it).
-bool pollFor(const std::function<bool()>& predicate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    bool reached = predicate();
-    while (!reached && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        reached = predicate();
-    }
-    return reached;
-}
-
 // The view a converter makes: its target state with the frame's colour (the display colour for
 // the display state), layout Any, in the tier of its memory kind.
 ViewSpec viewMadeBy(const media::detail::Converter& converter, const FrameDesc& desc,
@@ -239,11 +226,13 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: planes via the GPU equal the CPU referenc
             const FrameDesc desc{.format = idOf(name), .colour = 0, .width = 34, .height = 17};
             const GpuStore test(*this, desc, 3);
             const auto read = test.read(2, Api::HostPlanes, test.staging, executor());
-            REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+            REQUIRE_MESSAGE(read.has_value(),
+                            (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Lossless);
             CHECK(read->lease().view().format == media::unpackedFormat(desc.format));
             const auto expected = packedPlanes(desc.format, desc.width, desc.height, SEED, 2);
-            REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+            REQUIRE_MESSAGE(expected.has_value(),
+                            (expected.has_value() ? std::string{} : expected.error().describe()));
             CHECK(concatenated(hostPlanesOf(read->lease())) == *expected);
             const auto stats = test.store->stats();
             CHECK(runsOf(stats, "HostToStaging") == 1);
@@ -262,11 +251,13 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: requireExact via staging returns the orig
             const FrameDesc desc{.format = idOf(name), .colour = 0, .width = 34, .height = 17};
             const GpuStore test(*this, desc, 3);
             const auto read = test.read(2, Api::HostPlanes, test.staging, executor(), true);
-            REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+            REQUIRE_MESSAGE(read.has_value(),
+                            (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Exact);
             CHECK(read->lease().view().format == desc.format);
             const auto expected = packedOriginal(desc.format, desc.width, desc.height, SEED, 2);
-            REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+            REQUIRE_MESSAGE(expected.has_value(),
+                            (expected.has_value() ? std::string{} : expected.error().describe()));
             CHECK(concatenated(hostPlanesOf(read->lease())) == *expected);
             const auto stats = test.store->stats();
             CHECK(runsOf(stats, "Upload") == 1);
@@ -288,7 +279,8 @@ TEST_CASE_FIXTURE(GpuTest,
 
     // 1. The exact read's Readback entry stays leased; the HostUpload entry is evicted.
     const auto exact = test.read(0, Api::HostPlanes, test.staging, executor(), true);
-    REQUIRE_MESSAGE(exact.has_value(), exact.error().describe());
+    REQUIRE_MESSAGE(exact.has_value(),
+                    (exact.has_value() ? std::string{} : exact.error().describe()));
     const auto before = store.stats();
     store.trim(test.staging, 0);
     const auto layout = media::geometry(desc.format, desc.width, desc.height);
@@ -328,7 +320,8 @@ TEST_CASE_FIXTURE(GpuTest,
     CHECK(runsOf(after, "Upload") == runsOf(uploaded, "Upload"));
     CHECK(runsOf(after, "HostToStaging") == runsOf(uploaded, "HostToStaging"));
     const auto expected = packedOriginal(desc.format, desc.width, desc.height, SEED, 1);
-    REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+    REQUIRE_MESSAGE(expected.has_value(),
+                    (expected.has_value() ? std::string{} : expected.error().describe()));
     CHECK(concatenated(hostPlanesOf(host)) == *expected);
 }
 
@@ -340,7 +333,8 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
     // Only the leased Readback entry is left: the HostUpload staging and the device original are
     // evicted, so the cheapest way to the device is Upload from the Readback buffer.
     const auto exact = test.read(0, Api::HostPlanes, test.staging, executor(), true);
-    REQUIRE_MESSAGE(exact.has_value(), exact.error().describe());
+    REQUIRE_MESSAGE(exact.has_value(),
+                    (exact.has_value() ? std::string{} : exact.error().describe()));
     store.trim(test.staging, 0);
     store.trim(test.device, 0);
     REQUIRE(test.tierBytes(test.device) == 0);
@@ -348,7 +342,8 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
     const auto before = store.stats();
     const auto planes = syncWait(store.acquire(
         {test.origin, 0}, media::planesView(desc, media::vulkan::IMAGE, test.device), executor()));
-    REQUIRE_MESSAGE(planes.has_value(), planes.error().describe());
+    REQUIRE_MESSAGE(planes.has_value(),
+                    (planes.has_value() ? std::string{} : planes.error().describe()));
     const auto uploaded = store.stats();
     CHECK(runsOf(uploaded, "Upload") == runsOf(before, "Upload") + 1);
     CHECK(runsOf(uploaded, "HostToStaging") == runsOf(before, "HostToStaging"));
@@ -361,7 +356,8 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
     CHECK(runsOf(after, "Readback") == runsOf(uploaded, "Readback") + 1);
     CHECK(runsOf(after, "CpuUnpack") == runsOf(uploaded, "CpuUnpack"));
     const auto expected = packedPlanes(desc.format, desc.width, desc.height, SEED, 0);
-    REQUIRE_MESSAGE(expected.has_value(), expected.error().describe());
+    REQUIRE_MESSAGE(expected.has_value(),
+                    (expected.has_value() ? std::string{} : expected.error().describe()));
     CHECK(concatenated(hostPlanesOf(host)) == *expected);
 }
 
@@ -373,7 +369,7 @@ TEST_CASE_FIXTURE(GpuTest,
     const GpuStore test(*this, desc, 3);
 
     const auto read = test.read(0, Api::HostPlanes, test.store->hostDomain(), executor());
-    REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+    REQUIRE_MESSAGE(read.has_value(), (read.has_value() ? std::string{} : read.error().describe()));
     auto stats = test.store->stats();
     CHECK(runsOf(stats, "CpuUnpack") == 1);
     CHECK(runsOf(stats, "GpuUnpack") == 0);
@@ -429,7 +425,8 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffe
     SUBCASE("a pin of the same view resolves the same images") {
         const dvv::Result<media::PinLease> pin =
             syncWait(test.store->pin({test.origin, 0}, planes_view, executor()));
-        REQUIRE_MESSAGE(pin.has_value(), pin.error().describe());
+        REQUIRE_MESSAGE(pin.has_value(),
+                        (pin.has_value() ? std::string{} : pin.error().describe()));
         if (pin) {
             for (std::size_t c = 0; c < plane_count; ++c) {
                 CHECK(media::vulkan::image(*pin, c) == media::vulkan::image(lease, c));
@@ -477,12 +474,14 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                 .memory = gpu::MemoryUsage::DeviceOnly,
                                                 .name = "unpadded"});
-    REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
+    REQUIRE_MESSAGE(buffer.has_value(),
+                    (buffer.has_value() ? std::string{} : buffer.error().describe()));
     const ViewSpec view{desc.format,           desc.colour, LayoutPolicy::Tight,
                         media::vulkan::BUFFER, test.device, 0};
     auto frame = std::make_shared<UnpaddedBufferFrame>(desc, view, std::move(*buffer), *layout);
     const auto adopted = test.store->adopt({test.origin, 0}, std::move(frame));
-    REQUIRE_MESSAGE(adopted.has_value(), adopted.error().describe());
+    REQUIRE_MESSAGE(adopted.has_value(),
+                    (adopted.has_value() ? std::string{} : adopted.error().describe()));
 
     const auto planes = syncWait(test.store->acquire(
         {test.origin, 0}, media::planesView(desc, media::vulkan::IMAGE, test.device), executor()));
@@ -503,7 +502,7 @@ TEST_CASE_FIXTURE(GpuTest,
                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                               .memory = gpu::MemoryUsage::HostReadback,
                                               .name = "readback"});
-    REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+    REQUIRE_MESSAGE(made.has_value(), (made.has_value() ? std::string{} : made.error().describe()));
     std::shared_ptr<gpu::GpuBuffer> buffer = std::move(*made);
     {
         // A byte pattern, so the planes compare against known bytes.
@@ -527,7 +526,7 @@ TEST_CASE_FIXTURE(GpuTest,
     // With the scope: HostPlanes and VkBuffer, the planes inside the scope's bytes, valid after
     // the buffer's other holders dropped.
     auto read = buffer->mapRead();
-    REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+    REQUIRE_MESSAGE(read.has_value(), (read.has_value() ? std::string{} : read.error().describe()));
     const std::span<const std::byte> scope = read->bytes();
     REQUIRE(scope.size() >= frame_layout.bytes);
     const std::byte* base = scope.data();
@@ -593,7 +592,7 @@ TEST_CASE_FIXTURE(GpuTest,
     REQUIRE(pool.has_value());
     const std::shared_ptr<dvv::ThreadPool> executors = std::move(*pool);
     auto made = media::detail::makeGpuConverters(context().shared_from_this(), executors);
-    REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+    REQUIRE_MESSAGE(made.has_value(), (made.has_value() ? std::string{} : made.error().describe()));
     std::vector<std::unique_ptr<media::detail::Converter>> converters = std::move(*made);
     media::test::Gate gate;
     const media::detail::Converter* to_display = nullptr;
@@ -607,17 +606,19 @@ TEST_CASE_FIXTURE(GpuTest,
     auto created = media::detail::StoreAccess::create(
         {.cpu = executors, .io = executors, .gpu = context().shared_from_this()},
         std::move(converters));
-    REQUIRE_MESSAGE(created.has_value(), created.error().describe());
+    REQUIRE_MESSAGE(created.has_value(),
+                    (created.has_value() ? std::string{} : created.error().describe()));
     const std::shared_ptr<FrameStore> store = std::move(*created);
     auto attached = store->attach(std::make_shared<PackedSource>(desc, 1, SEED));
-    REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+    REQUIRE_MESSAGE(attached.has_value(),
+                    (attached.has_value() ? std::string{} : attached.error().describe()));
     REQUIRE(store->deviceDomain().has_value());
     const Domain device = store->deviceDomain().value_or(Domain{});
 
     bool reached = false;
     std::vector<std::size_t> pending;  // per tier, while ToDisplay waits
     std::jthread opener([&] {
-        reached = pollFor([&] { return gate.waiting() == 1; });
+        reached = media::test::waitFor([&] { return gate.waiting() == 1; });
         for (const media::TierStats& tier : store->stats().tiers) {
             pending.push_back(tier.pending);
         }
@@ -626,7 +627,8 @@ TEST_CASE_FIXTURE(GpuTest,
     const auto display =
         syncWait(store->acquire({*attached, 0}, media::displayView(device), executor()));
     opener.join();
-    REQUIRE_MESSAGE(display.has_value(), display.error().describe());
+    REQUIRE_MESSAGE(display.has_value(),
+                    (display.has_value() ? std::string{} : display.error().describe()));
     CHECK(reached);
     const std::vector<media::TierStats> tiers = store->stats().tiers;
     REQUIRE(pending.size() == tiers.size());

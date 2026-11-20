@@ -14,7 +14,6 @@
 #include <stop_token>
 #include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "dvv/media/pixel_format.h"

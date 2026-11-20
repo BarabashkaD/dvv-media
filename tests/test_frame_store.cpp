@@ -17,7 +17,6 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "converters.h"
@@ -71,6 +70,7 @@ using dvv::media::test::FakeConverter;
 using dvv::media::test::FakeFrame;
 using dvv::media::test::FakeSource;
 using dvv::media::test::Gate;
+using dvv::media::test::OnExit;
 using dvv::media::test::pattern;
 using dvv::media::test::StoreTest;
 using dvv::media::test::waitFor;
@@ -1801,7 +1801,8 @@ TEST_SUITE("store") {
     TEST_CASE_FIXTURE(StoreTest, "detach cancels the origin's queued produce steps") {
         auto made_pool = dvv::ExecutorFactory::makeThreadPool(1);
         REQUIRE(made_pool.has_value());
-        const std::shared_ptr<dvv::ThreadPool> pool = std::move(*made_pool);
+        const std::shared_ptr<dvv::ThreadPool> pool =
+            std::move(made_pool).value_or(std::shared_ptr<dvv::ThreadPool>{});
         const auto counting = std::make_shared<dvv::media::test::CountingExecutor>(*pool);
         const auto store = makeStore(
             {}, {}, [&](dvv::media::FrameStoreOptions& options) { options.cpu = counting; });
@@ -1812,11 +1813,18 @@ TEST_SUITE("store") {
         const std::uint64_t failures = store->stats().failures;
 
         auto first = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });  // its produce passed the cpu hop
         std::latch busy(1);
         pool->post([&busy] { busy.wait(); });
         const std::size_t posts = counting->posts();
         auto second = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        const OnExit release([&] {
+            if (!busy.try_wait()) {
+                busy.count_down();
+            }
+            gate.open();
+        });
         waitUntil([&] { return counting->posts() > posts; });  // queued behind the busy task
         store->detach(origin);
         busy.count_down();
@@ -1837,6 +1845,7 @@ TEST_SUITE("store") {
         source->gate = &gate;
         const OriginId origin = store->attach(source).value();
         auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });
         CHECK_FALSE(source->sawStop.load());
         store->detach(origin);
@@ -1858,6 +1867,7 @@ TEST_SUITE("store") {
         const OriginId origin = store->attach(source).value();
         const std::uint64_t failures = store->stats().failures;
         auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });
         store->detach(origin);
         gate.open();
@@ -1877,6 +1887,7 @@ TEST_SUITE("store") {
         const OriginId two = store->attach(source).value();
         auto first = acquireAsync(*store, {one, 0}, hostView, *requester);
         auto second = acquireAsync(*store, {two, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 2; });
         store->detach(one);
         gate.open();
@@ -1906,6 +1917,7 @@ TEST_SUITE("store") {
         Gate gate;
         source->gate = &gate;
         auto acquired = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });
         store->detach(origin);
         gate.open();
@@ -1955,6 +1967,7 @@ TEST_SUITE("store") {
         const OriginId origin = store->attach(makeSource()).value();
         const std::uint64_t failures = store->stats().failures;
         auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });  // only the retry awaits the gate
         CHECK(hostPending(*store) == OUTPUT);            // reserved before run
         store->detach(origin);
@@ -1978,6 +1991,7 @@ TEST_SUITE("store") {
         };
         const OriginId origin = store->attach(source).value();
         auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
         waitUntil([&] { return gate.waiting() == 1; });  // the callback is registered
         store->detach(origin);  // would deadlock if the stop were requested under the mutex
         CHECK(called.load());

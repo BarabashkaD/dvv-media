@@ -300,9 +300,8 @@ TEST_CASE("pixel format: the new names are the old ones") {
     static_assert(std::is_same_v<media::PixelFormatDescriptor, media::PixelFormatDesc>);
     const media::FormatId id = idOf("yuv420p");
     CHECK(&media::descriptor(id) == &media::formatDesc(id));
-    constexpr media::FormatId UNKNOWN = 0xFFFFFFFF;
-    CHECK(&media::descriptor(UNKNOWN) == &media::formatDesc(UNKNOWN));
-    CHECK(media::formatDesc(UNKNOWN).name.empty());
+    CHECK(&media::descriptor(UNKNOWN_ID) == &media::formatDesc(UNKNOWN_ID));
+    CHECK(media::formatDesc(UNKNOWN_ID).name.empty());
 }
 
 TEST_CASE("unknown ids") {

@@ -176,6 +176,23 @@ private:
     std::atomic<std::size_t> posts_{0};
 };
 
+// Runs a function when the scope ends. A case that leaves an acquire waiting on a gate declares
+// one after its futures, so a failed REQUIRE opens the gate before a future's destructor waits
+// for the acquire.
+template <class F>
+class OnExit {
+public:
+    explicit OnExit(F run) : run_(std::move(run)) {}
+    ~OnExit() { run_(); }
+    OnExit(const OnExit&) = delete;
+    OnExit& operator=(const OnExit&) = delete;
+    OnExit(OnExit&&) = delete;
+    OnExit& operator=(OnExit&&) = delete;
+
+private:
+    F run_;
+};
+
 // Polls every 1 ms for up to 10 s; REQUIREs that the predicate became true.
 void waitUntil(const std::function<bool()>& predicate);
 // The same poll without REQUIRE, for helper threads (a REQUIRE there would terminate the process):
