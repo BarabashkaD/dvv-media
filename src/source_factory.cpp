@@ -225,6 +225,18 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
             providers.push_back(index);
         }
     }
+    // ?impl= naming an unavailable provider is its own error, before any no-match (even when that
+    // provider is the scheme's only one). create() puts no provider in both lists.
+    if (const auto impl = uri.param("impl")) {
+        const std::string_view impl_id = *impl;
+        const auto skipped = std::ranges::find_if(
+            unavailable_, [&](const UnavailableProvider& entry) { return entry.id == impl_id; });
+        if (skipped != unavailable_.end()) {
+            co_return makeError(
+                Errc::Unsupported,
+                std::format("source provider '{}' is unavailable: {}", impl_id, skipped->reason));
+        }
+    }
     if (providers.empty()) {
         co_return noMatchError(std::format("no source provider for scheme '{}'", uri.scheme),
                                unavailable_);
@@ -251,14 +263,6 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         const auto chosen = std::ranges::find_if(
             providers, [&](std::size_t index) { return providers_[index].id == impl_id; });
         if (chosen == providers.end()) {
-            const auto skipped = std::ranges::find_if(
-                unavailable_,
-                [&](const UnavailableProvider& entry) { return entry.id == impl_id; });
-            if (skipped != unavailable_.end()) {
-                co_return makeError(Errc::Unsupported,
-                                    std::format("source provider '{}' is unavailable: {}", impl_id,
-                                                skipped->reason));
-            }
             std::string ids;
             for (const std::size_t index : providers) {
                 ids += ids.empty() ? "" : ", ";

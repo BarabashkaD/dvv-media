@@ -483,6 +483,31 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: ?impl= naming an unavailable provider")
     CHECK_FALSE(media::isNoProviderMatch(result.error()));
 }
 
+// fake2 is the only provider of its scheme; naming it with ?impl= is still the unavailable error,
+// not the scheme's no-match.
+TEST_CASE_FIXTURE(FactoryTest,
+                  "factory: ?impl= naming the scheme's only provider when it is unavailable") {
+    dvv::Uri uri;
+    uri.scheme = "fake2";
+    uri.path = "x";
+    uri.params.emplace_back("impl", "fake2");
+    const auto result = dvv::syncWait(factory->open({.uri = uri, .hint = std::nullopt}));
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(result.error().message ==
+          "source provider 'fake2' is unavailable: missing capability 'fake2'");
+    CHECK_FALSE(media::isNoProviderMatch(result.error()));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: the ?impl= no-match names the unavailable providers") {
+    b().why = "why b";
+    const auto result = openWithImpl("fake_b");  // fake:x?impl=fake_b, confidence 0
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(media::isNoProviderMatch(result.error()));
+    const std::string& text = result.error().message;
+    CHECK(text.starts_with("fake_b cannot open '"));
+    CHECK(text.ends_with("': why b; unavailable: fake2 (missing capability 'fake2')"));
+}
+
 TEST_CASE_FIXTURE(FactoryTest, "factory: the reasons part of a no-match text is unchanged") {
     a().why = "why a";
     b().why = "why b";
