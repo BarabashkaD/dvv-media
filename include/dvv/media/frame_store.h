@@ -1,6 +1,6 @@
 #pragma once
 
-// The frame store (M2 design §5.1, §5.2): one index of frames per key, single-flight creation,
+// The frame store: one index of frames per key, single-flight creation,
 // read and pin leases, adoption, trimming and statistics.
 
 #include <cstddef>
@@ -37,7 +37,7 @@ struct Plan;
 struct Prepared;
 struct Record;
 class Converter;
-// What a Lease holds (§5.2: the store and the entry).
+// What a Lease holds: the store and the entry.
 struct LeaseCore {
     std::shared_ptr<FrameStore> store;
     std::shared_ptr<Entry> entry;
@@ -67,12 +67,14 @@ public:
     [[nodiscard]] const ViewSpec& view() const noexcept { return core_.view; }
     [[nodiscard]] Fidelity fidelity() const noexcept;
     [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
-    // The host planes of a HostPlanes binding; null for an empty lease or another binding. Valid
-    // while this lease (or a share of it) lives.
-    [[nodiscard]] const HostPlanesB* planes() const noexcept;
     // When the content is ready: the sync point given to adopt, or {} (always reached) for a frame
     // the store made.
     [[nodiscard]] SyncPoint ready() const noexcept;
+
+    // Valid and empty leases:
+    // The host planes of a HostPlanes binding; null for an empty lease or another binding. Valid
+    // while this lease (or a share of it) lives.
+    [[nodiscard]] const HostPlanesB* planes() const noexcept;
     // A second lease on the same entry and view, counted like any lease (one more reader for Read,
     // one more pin for Pin) and listed in outstandingLeases() with `where`. Takes the store mutex.
     // An empty lease gives an empty lease (no lock). Valid also after the origin was detached: the
@@ -90,7 +92,7 @@ using PinLease = Lease<LeaseKind::Pin>;
 extern template class Lease<LeaseKind::Read>;
 extern template class Lease<LeaseKind::Pin>;
 
-// A read of a key's original (§6.6): only FrameStore::acquireOriginal makes one.
+// A read of a key's original: only FrameStore::acquireOriginal makes one.
 class OriginalRead {
 public:
     [[nodiscard]] const ReadLease& lease() const noexcept { return lease_; }  // Exact or Lossless
@@ -141,7 +143,7 @@ struct FrameStoreOptions {
 // Lossless: the unpacked planes of the original; Exact: the original format.
 enum class OriginalFidelity : std::uint8_t { Lossless, Exact };
 struct OriginalRequest {
-    Api api = Api::HostPlanes;
+    BindingKind api = BindingKind::HostPlanes;
     Domain domain{};
     OriginalFidelity fidelity = OriginalFidelity::Lossless;
 };
@@ -160,8 +162,10 @@ public:
     [[nodiscard]] std::optional<Domain> deviceDomain() const noexcept;   // {DeviceLocal, d, gen}
 
     [[nodiscard]] Result<OriginId> attach(std::shared_ptr<ISource> source);
-    // Cancels the origin's queued and running produce and conversion steps: their acquires end
-    // with Errc::Cancelled. Detaching an unknown origin does nothing.
+    // Drops the origin's frames from the index (leased ones live on with their leases) and
+    // cancels its queued and running produce and conversion steps: their acquires end with
+    // Errc::Cancelled. An origin that was never attached (or is already detached) has no steps,
+    // but the frames adopted under it are dropped too; with none, detach does nothing.
     void detach(OriginId origin);
 
     // `key` and `want` are taken by value: the tasks are lazy, and a reference to a temporary
