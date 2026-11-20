@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <source_location>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -170,6 +171,11 @@ Error SourceFactory::providerFailed(std::size_t index, std::string_view what) {
 }
 
 Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest& request) {
+    return open(request, std::stop_token{});
+}
+
+Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest& request,
+                                                            std::stop_token stop) {
     // The caller's request with the factory's sidecar (step 2); it lives in this frame, so it
     // outlives every match() and open() below.
     SourceRequest full_request = request;
@@ -202,6 +208,10 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         }
     }
 
+    if (stop.stop_requested()) {
+        co_return makeError(Errc::Cancelled, "the open was cancelled");
+    }
+
     // 3. ?impl=<id>: the user chose, so any confidence above 0 opens it.
     if (const auto impl = uri.param("impl")) {
         const std::string_view impl_id = *impl;
@@ -232,7 +242,7 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
             co_return noMatchError(std::format("{} cannot open '{}': {}", providers_[index].id,
                                                formatUri(uri), match->why));
         }
-        co_return co_await openWith(index, full_request, match->guess);
+        co_return co_await openWith(index, full_request, match->guess, stop);
     }
 
     // 4. Every provider's match; the confident ones sorted by confidence, ties by id.
@@ -277,18 +287,20 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
     }
 
     // 5. Open the best.
-    co_return co_await openWith(scored.front().index, full_request, scored.front().match.guess);
+    co_return co_await openWith(scored.front().index, full_request, scored.front().match.guess,
+                                stop);
 }
 
 Task<Result<SourceFactory::OpenResult>> SourceFactory::openWith(std::size_t index,
                                                                 const SourceRequest& request,
-                                                                const FormatGuess& guess) {
+                                                                const FormatGuess& guess,
+                                                                std::stop_token stop) {
     const ProviderEntry& entry = providers_[index];
     std::optional<Result<std::unique_ptr<ISource>>> opened;
     std::string failure;
     try {
         // Awaited here, so `request`, `guess` and the context outlive the provider's task.
-        const OpenContext context{.io = *io_};
+        const OpenContext context{.io = *io_, .stop = stop};
         opened = co_await entry.provider->open(
             OpenTicket(objectId(), std::source_location::current()), request, guess, context);
     } catch (...) {
@@ -303,6 +315,10 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::openWith(std::size_t inde
     if (**opened == nullptr) {
         co_return makeError(Errc::Internal,
                             std::format("source provider '{}' returned no source", entry.id));
+    }
+    if (stop.stop_requested()) {
+        (*opened)->reset();  // the caller no longer wants the source
+        co_return makeError(Errc::Cancelled, "the open was cancelled");
     }
     co_return OpenResult(std::move(**opened));
 }

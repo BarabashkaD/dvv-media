@@ -16,6 +16,7 @@
 #include <source_location>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -105,6 +106,8 @@ private:
 
 struct OpenContext {
     IExecutor& io;
+    // Stopped when the caller no longer wants the source; a provider that waits should end early.
+    std::stop_token stop{};
 };
 
 // The interface of the source-provider components (spec §9.3). Implementations are stateless:
@@ -156,8 +159,12 @@ public:
     // can open the request, Errc::Internal when a provider throws (that provider is then
     // disabled for the factory's lifetime) or returns no source. A provider's own open() error
     // (e.g. Unsupported for a codec it refuses) is returned unchanged; isNoProviderMatch() tells
-    // the two Unsupported kinds apart.
+    // the two Unsupported kinds apart. The same as open(request, std::stop_token{}).
     [[nodiscard]] Task<Result<OpenResult>> open(const SourceRequest& request);
+    // The same with a token: Errc::Cancelled "the open was cancelled" when it is stopped after the
+    // head is read, or when it is stopped as the provider returns a source (the source is then
+    // destroyed). The token also reaches the provider in OpenContext::stop.
+    [[nodiscard]] Task<Result<OpenResult>> open(const SourceRequest& request, std::stop_token stop);
 
     // For providers: the typed key of the one source a ticket may create. Throws
     // std::logic_error for a ticket that was already used (moved from or spent).
@@ -170,7 +177,7 @@ private:
     // failed: <what>".
     [[nodiscard]] Error providerFailed(std::size_t index, std::string_view what);
     [[nodiscard]] Task<Result<OpenResult>> openWith(std::size_t index, const SourceRequest& request,
-                                                    const FormatGuess& guess);
+                                                    const FormatGuess& guess, std::stop_token stop);
 
     std::vector<ProviderEntry> providers_;  // sorted by id
     std::shared_ptr<IExecutor> io_;

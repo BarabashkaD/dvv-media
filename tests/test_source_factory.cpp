@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -8,9 +9,12 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -24,6 +28,7 @@
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
+#include "dvv/platform/file_reader.h"
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
@@ -431,4 +436,93 @@ TEST_CASE("factory: InterfaceKind of ISourceProvider is Source") {
     static_assert(dvv::InterfaceKind<media::ISourceProvider>::value == dvv::Kind::Source);
     static_assert(dvv::HasInterfaceKind<media::ISourceProvider>);
     CHECK(true);
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: open returns Cancelled for a stopped token") {
+    SUBCASE("stopped before the open: no provider open runs") {
+        a().confidence = 95;
+        std::stop_source source;
+        source.request_stop();
+        auto uri = dvv::parseUri("fake:x");
+        REQUIRE(uri.has_value());
+        const auto result = dvv::syncWait(
+            factory->open({.uri = uri.value(), .hint = std::nullopt}, source.get_token()));
+        checkError(result, dvv::Errc::Cancelled);
+        CHECK(result.error().message == "the open was cancelled");
+        CHECK(a().openCalls == 0);
+        CHECK(b().openCalls == 0);
+        CHECK(c().openCalls == 0);
+        CHECK(fakes::gated().opens == 0);
+    }
+    SUBCASE("stopped while the provider waits: the source is destroyed") {
+        auto uri = dvv::parseUri("gated:x");
+        REQUIRE(uri.has_value());
+        const int destroyed_before = fakes::gated().destroyed;
+        std::stop_source source;
+        std::optional<OpenResult> result;
+        std::thread opener([&] {
+            result = dvv::syncWait(
+                factory->open({.uri = uri.value(), .hint = std::nullopt}, source.get_token()));
+        });
+        bool reached = false;
+        for (int i = 0; i < 10000 && !reached; ++i) {
+            reached = fakes::gated().waiting() == 1;
+            if (!reached) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        source.request_stop();
+        fakes::gated().open();
+        opener.join();
+        CHECK(reached);
+        CHECK(result.has_value());
+        if (result) {
+            checkError(*result, dvv::Errc::Cancelled);
+            CHECK(result->error().message == "the open was cancelled");
+        }
+        CHECK(fakes::gated().sawStop);
+        CHECK(fakes::gated().destroyed == destroyed_before + 1);
+    }
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: open(request) equals open(request, {})") {
+    a().confidence = 95;
+    b().confidence = 30;
+    auto uri = dvv::parseUri("fake:x");
+    REQUIRE(uri.has_value());
+    const media::SourceRequest request{.uri = uri.value(), .hint = std::nullopt};
+    const auto plain = dvv::syncWait(factory->open(request));
+    const auto with_token = dvv::syncWait(factory->open(request, {}));
+    CHECK(sourceOf(plain).info().provider == "fake_a");
+    CHECK(sourceOf(with_token).info().provider == "fake_a");
+    CHECK(sourceOf(plain).info().resolvedUri == sourceOf(with_token).info().resolvedUri);
+}
+
+// The overload shapes (compile-only).
+static_assert(requires(media::SourceFactory& f, const media::SourceRequest& r, std::stop_token t) {
+    f.open(r);
+    f.open(r, t);
+    f.open(r, {});
+    f.open(r, std::stop_token{});
+});
+static_assert(std::is_same_v<decltype(std::declval<media::SourceFactory&>().open(
+                                 std::declval<const media::SourceRequest&>())),
+                             dvv::Task<dvv::Result<media::SourceFactory::OpenResult>>>);
+
+// Kept until 1.0.0: the aggregate forms of 0.1.1 still compile (-Werror).
+TEST_CASE("OpenContext and SourceRequest keep their 0.1.1 initialisers") {
+    const auto io = dvv::ExecutorFactory::makeThreadPool(1);
+    REQUIRE(io.has_value());
+    const media::OpenContext positional{*io.value()};
+    const media::OpenContext designated{.io = *io.value()};
+    CHECK_FALSE(positional.stop.stop_possible());
+    CHECK_FALSE(designated.stop.stop_possible());
+
+    const auto uri = dvv::parseUri("file:x.raw");
+    REQUIRE(uri.has_value());
+    const media::SourceRequest four{uri.value(), std::nullopt, dvv::platform::FileReadMode::Auto,
+                                    std::nullopt};
+    // SourceRequest{uri} and {.uri = uri, .fileReads = ...} are not listed: they skip `hint`, which
+    // has no default initialiser, so they already fail under -Werror in 0.1.1.
+    CHECK(four.uri.path == uri.value().path);
 }
