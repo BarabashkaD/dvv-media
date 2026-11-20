@@ -1,7 +1,7 @@
 #pragma once
 
-// The scalar CPU reference (slow, obviously correct), spec §7.3: the ground truth for tests and the
-// CPU fallback (CpuUnpack, Task 8).
+// The scalar CPU reference (slow, obviously correct): the ground truth for tests and the CPU
+// fallback of the unpack.
 
 #include <array>
 #include <cstddef>

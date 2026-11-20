@@ -1,6 +1,6 @@
 #pragma once
 
-// The clip description JSON (D5 design §3): `{"rawreelClip": 1, ...}` names a raw clip's format,
+// The clip description JSON: `{"rawreelClip": 1, ...}` names a raw clip's format,
 // size, frame rate and colour. Every key but rawreelClip is optional; at least one group is given.
 
 #include <cstdint>
@@ -21,7 +21,7 @@ struct ClipDescription {
     std::optional<std::string> format{};
     std::optional<std::pair<std::uint32_t, std::uint32_t>> size{};  // width, height: 1..65535
     std::optional<Rational> fps{};                                  // reduced, num and den > 0
-    // "colour": {"standard": "<token>", "range": "full"|"limited"} (D5R §3.2): the preset is
+    // "colour": {"standard": "<token>", "range": "full"|"limited"}: the preset is
     // always set; the range is Unspecified when not given. The raw provider uses it as it uses
     // colour= and range= (the query wins per key).
     std::optional<ColourSpec> colour{};

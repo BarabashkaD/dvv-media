@@ -1,6 +1,6 @@
 #pragma once
 
-// Frame sources (M2 design §4.5, spec §7.1): what a source tells about itself, the context the
+// Frame sources: what a source tells about itself, the context the
 // store hands to one produce() call, and the source interface.
 
 #include <cstddef>
@@ -52,10 +52,10 @@ struct SourceInfo {
     // File sources: FileReader::modeText(), "unbuffered", "buffered" or "buffered (fallback:
     // <reason>)" (M3.1 U-IO2); empty otherwise (D18 bench).
     std::string reader{};
-    // Info-level lines for the log, not the infobar (D5 design §3.5), e.g. "clip.yuv.json
+    // Info-level lines for the log, not the infobar, e.g. "clip.yuv.json
     // describes clip.yuv (it wins over the file name)".
     std::vector<std::string> notes{};
-    // The colour hint the provider derived from the file tags (D5R F1): `bt601` names the BT.601
+    // The colour hint the provider derived from the file tags: `bt601` names the BT.601
     // PAL/NTSC that the matrix code points to (the provider also writes it into desc.colour, which
     // the render path needs), and `nonStandard` says that the file signalled a code that fits no
     // field. Pass it to resolveColour()/standardOf() when labelling the stream. Sources without
@@ -84,7 +84,7 @@ public:
     [[nodiscard]] std::stop_token stopToken() const noexcept { return stop_; }
     // A host frame for this key: `capacity` bytes aligned to `alignment`, frame data at
     // `data_offset`. Errc::Internal when desc differs from the source's, the alignment is not a
-    // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (Task 7b: after
+    // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (after
     // one eviction retry). Counts `capacity` in the host tier from the call until the frame is
     // published or the produce step ends.
     [[nodiscard]] Result<std::shared_ptr<HostFrame>> allocateHost(const FrameDesc& desc,
@@ -110,7 +110,7 @@ private:
     std::shared_ptr<IFrame> frame_;
 };
 
-// Spec §7.1.
+// A source of frames: the store calls produce() for each frame it makes from the source.
 class ISource {
 public:
     virtual ~ISource() = default;

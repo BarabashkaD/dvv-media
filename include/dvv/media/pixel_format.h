@@ -1,6 +1,6 @@
 #pragma once
 
-// Pixel-format descriptors (spec §7.3, M2 design D2): a plane is a row of groups; a group spans
+// Pixel-format descriptors: a plane is a row of groups; a group spans
 // groupPixels full-resolution pixels in groupBytes bytes made of words of wordBytes with one byte
 // order; each sample of a group is a slot {component, index in the component's own grid, word,
 // shift}, value = (word >> shift) & ((1 << bits) - 1).
@@ -24,7 +24,7 @@ enum class ComponentKind : std::uint8_t { Y, U, V, R, G, B, A };
 enum class ByteOrder : std::uint8_t { Little, Big };
 
 inline constexpr std::size_t MAX_COMPONENTS = 4, MAX_PLANES = 4, MAX_SLOTS = 12;
-// GPU unpack limit (design §5.4): samples of one component per group.
+// GPU unpack limit: samples of one component per group.
 inline constexpr std::size_t MAX_COMPONENT_SAMPLES = 6;
 
 struct ComponentDesc {
@@ -81,7 +81,7 @@ using PixelFormatDesc = PixelFormatDescriptor;  // the name to use; 1.0.0 flips 
 }
 // Exact, case-sensitive name match over every interned format (catalogue, unpacked, custom).
 [[nodiscard]] std::optional<FormatId> findFormat(std::string_view name) noexcept;
-// FFmpeg's deprecated full-range names (M4 design D4): what a decoder output named yuvj420p,
+// FFmpeg's deprecated full-range names: what a decoder output named yuvj420p,
 // yuvj422p or yuvj444p is in the catalogue, with the range its name implies.
 struct FormatAlias {
     FormatId format = 0;

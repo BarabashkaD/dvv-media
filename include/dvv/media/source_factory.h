@@ -1,6 +1,6 @@
 #pragma once
 
-// Source providers and the source factory (M2 design §4.5, §5.5; spec §7.2).
+// Source providers and the source factory.
 //
 // A provider is a component registered for ISourceProvider. SourceFactory creates one
 // instance of every available provider, picks the provider for a request (scheme, file head,
@@ -43,7 +43,7 @@ struct FormatHint {
     std::optional<Rational> fps;
 };
 
-// The clip description next to a file, `<file>.<ext>.json` (D5 design §3.5).
+// The clip description next to a file, `<file>.<ext>.json`.
 struct Sidecar {
     std::string path;   // UTF-8: the file's path plus ".json"
     std::string text;   // the file's text; empty when it could not be read
@@ -113,7 +113,7 @@ struct OpenContext {
     std::stop_token stop{};
 };
 
-// The interface of the source-provider components (spec §9.3). Implementations are stateless:
+// The interface of the source-provider components. Implementations are stateless:
 // match() and open() may run concurrently, and a source never keeps a pointer to its provider.
 class ISourceProvider {
 public:
@@ -171,7 +171,7 @@ public:
     // The Source providers the registry reported unavailable at create(), sorted by id.
     [[nodiscard]] std::span<const UnavailableProvider> unavailableProviders() const noexcept;
 
-    // Picks a provider and opens the source (design §5.5); thread-safe. A file's head is read on
+    // Picks a provider and opens the source; thread-safe. A file's head is read on
     // the io executor. Ambiguous when the best confidence is below 60 or another is within less
     // than 10 of it. Errc::Io when the file cannot be read, Errc::Unsupported when no provider
     // can open the request, Errc::Internal when a provider throws (that provider is then

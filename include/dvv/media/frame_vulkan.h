@@ -1,6 +1,6 @@
 #pragma once
 
-// The Vulkan interop header of the frame model (spec §6.5, §6.6): a lease's GPU resources and the
+// The Vulkan interop header of the frame model: a lease's GPU resources and the
 // Vulkan binding kinds.
 
 #include <cstddef>

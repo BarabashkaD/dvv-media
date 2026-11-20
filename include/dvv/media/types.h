@@ -1,6 +1,6 @@
 #pragma once
 
-// Frame value types of the media layer (spec §6, M2 design §4.3).
+// Frame value types of the media layer.
 
 #include <cstddef>
 #include <cstdint>

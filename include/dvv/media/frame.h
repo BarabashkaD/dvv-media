@@ -1,6 +1,6 @@
 #pragma once
 
-// Frames (M2 design §4.4, spec §6.2): the IFrame interface, its bindings, the host memory frame,
+// Frames: the IFrame interface, its bindings, the host memory frame,
 // the GPU frames and the frame handle.
 
 #include <array>
@@ -53,7 +53,7 @@ template <class B>
     return std::get_if<B>(&binding);
 }
 
-// Spec §6.2.
+// A frame: its description, its native views and the binding of each view.
 class IFrame {
 public:
     virtual ~IFrame() = default;
@@ -128,7 +128,7 @@ private:
     std::unique_ptr<gpu::MappedRead> host_read_;
 };
 
-// The original in a DeviceOnly buffer, padded for the GPU unpack (M2 design §5.4). One native view:
+// The original in a DeviceOnly buffer, padded for the GPU unpack. One native view:
 // (desc.format, desc.colour, Tight, vulkan::BUFFER, domain DeviceLocal).
 // Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkBufferFrame final : public IFrame, public Managed<VkBufferFrame> {
@@ -170,7 +170,7 @@ private:
     std::size_t bytes_ = 0;
 };
 
-// Handle: key + desc + store (§6.2).
+// Handle: key + desc + store.
 struct FrameRef {
     FrameKey key;
     FrameDesc desc;

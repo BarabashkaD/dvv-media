@@ -1,6 +1,6 @@
 #pragma once
 
-// The display view and its colour model (spec §6.3, §8; design M3 D3-D6, D5R §1-§2). ToDisplay
+// The display view and its colour model. ToDisplay
 // turns code values into linear-light RGB; the primaries are not converted (the screen's are
 // assumed). The CPU reference here and
 // shaders/to_display.slang use the same float32 formulas.
@@ -45,7 +45,7 @@ struct ResolvedColour {
     std::optional<ColourPreset> standard;
     bool operator==(const ResolvedColour&) const = default;
 };
-// The colour of `desc` (D5R §1.3, M4-D5R-NSPIX2): missing fields (left Unspecified by the frame)
+// The colour of `desc`: missing fields (left Unspecified by the frame)
 // come from the standard the given fields point to (standardOf with `hint`), else BT.709. A
 // nonStandard hint gives no standard (BT.709 fills); a BT.601 hint picks the PAL or NTSC primaries.
 // Callers that show the values pass the default hint, as the renderer does. The matrix of an RGB
