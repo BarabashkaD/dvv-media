@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -89,12 +90,18 @@ public:
 
     std::atomic<int> attempts{0};
     std::atomic<int> produced{0};
-    std::atomic<int> failNext{0};  // that many produces return Io "fake read error"
+    std::atomic<int> failNext{0};  // that many produces return failWith "fake read error"
+    std::atomic<Errc> failWith{Errc::Io};
     std::atomic<bool> throwNext{false};
     Gate* gate = nullptr;                  // awaited on ctx.io() before allocating
     Gate* afterAllocate = nullptr;         // awaited on ctx.io() after allocateHost, before publish
     std::atomic<int> extraAllocations{0};  // that many extra allocateHost calls, frames dropped
     std::atomic<int> failAfterAllocate{0};  // that many produces return Io after allocateHost
+    // ctx.stopToken().stop_requested(), read after the gates.
+    std::atomic<bool> sawStop{false};
+    // When set, registered as a stop callback on ctx.stopToken() before the gates and held until
+    // produce returns. Set before the first acquire.
+    std::function<void()> onStop{};
 
 private:
     SourceInfo info_;

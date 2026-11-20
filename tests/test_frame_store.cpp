@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <format>
 #include <future>
+#include <latch>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -203,6 +204,19 @@ std::size_t hostDetachedReserved(FrameStore& store) {
     const StoreState& s = StoreAccess::state(store);
     const std::scoped_lock lock(s.mutex);
     return s.tiers[0].detachedReserved;
+}
+
+// An acquire on its own thread, for cases that detach while it runs.
+std::future<Result<ReadLease>> acquireAsync(FrameStore& store, FrameKey key, const ViewSpec& view,
+                                            IExecutor& resume_on) {
+    return std::async(std::launch::async, [&store, key, view, &resume_on] {
+        return syncWait(store.acquire(key, view, resume_on));
+    });
+}
+
+// The acquire failed with Errc::Cancelled.
+bool isCancelled(const Result<ReadLease>& result) {
+    return !result.has_value() && result.error().code == Errc::Cancelled;
 }
 
 }  // namespace
@@ -1780,5 +1794,211 @@ TEST_SUITE("store") {
         CHECK(pending == 2 * CAPACITY);
         CHECK(settled(*store));
         requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach cancels the origin's queued produce steps") {
+        auto made_pool = dvv::ExecutorFactory::makeThreadPool(1);
+        REQUIRE(made_pool.has_value());
+        const std::shared_ptr<dvv::ThreadPool> pool = std::move(*made_pool);
+        const auto counting = std::make_shared<dvv::media::test::CountingExecutor>(*pool);
+        const auto store = makeStore(
+            {}, {}, [&](dvv::media::FrameStoreOptions& options) { options.cpu = counting; });
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+
+        auto first = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });  // its produce passed the cpu hop
+        std::latch busy(1);
+        pool->post([&busy] { busy.wait(); });
+        const std::size_t posts = counting->posts();
+        auto second = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        waitUntil([&] { return counting->posts() > posts; });  // queued behind the busy task
+        store->detach(origin);
+        busy.count_down();
+        gate.open();
+
+        CHECK(isCancelled(first.get()));
+        CHECK(isCancelled(second.get()));
+        CHECK(source->attempts.load() == 1);  // the queued step never called produce
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a running produce sees the stop") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });
+        CHECK_FALSE(source->sawStop.load());
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(source->sawStop.load());
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter plan of a detached origin is cancelled") {
+        constexpr std::size_t OUTPUT = 96;
+        auto unpack = makeUnpack(nullptr, OUTPUT);
+        const FakeConverter* const converter = unpack.get();
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(converter->runs.load() == 0);
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach of one origin does not cancel another") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId one = store->attach(source).value();
+        const OriginId two = store->attach(source).value();
+        auto first = acquireAsync(*store, {one, 0}, hostView, *requester);
+        auto second = acquireAsync(*store, {two, 0}, hostView, *requester);
+        waitUntil([&] { return gate.waiting() == 2; });
+        store->detach(one);
+        gate.open();
+        CHECK(isCancelled(first.get()));
+        const Result<ReadLease> other = second.get();
+        CHECK(other.has_value());
+        if (other) {
+            CHECK(holdsPattern(planesOf(*other).planes[0], 0));
+        }
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a source's own Cancelled is a failure") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+        source->failWith = Errc::Cancelled;
+        source->failNext = 1;
+        const Result<ReadLease> own = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(isCancelled(own));
+        CHECK(store->stats().failures == failures + 1);
+
+        source->failWith = Errc::Io;
+        source->failNext = 1;
+        Gate gate;
+        source->gate = &gate;
+        auto acquired = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(store->stats().failures == failures + 1);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach during the host allocator's OOM retry") {
+        const auto store = makeStore();
+        std::atomic<int> calls{0};
+        std::latch reached(1);
+        std::latch release(1);
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &reached, &release](
+                std::size_t bytes, std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                if (calls.fetch_add(1) == 0) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                reached.count_down();  // the retry, outside the mutex
+                release.wait();
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const OriginId origin = store->attach(makeSource()).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        reached.wait();
+        store->detach(origin);
+        release.count_down();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(calls.load() == 2);
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach during a converter OOM retry") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        auto unpack = makeUnpack(&gate, OUTPUT);
+        unpack->failWith = Errc::OutOfMemory;
+        unpack->failNext = 1;
+        unpack->gateSkips = 1;  // the first run fails at once, the retry waits on the gate
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });  // only the retry awaits the gate
+        CHECK(hostPending(*store) == OUTPUT);            // reserved before run
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a stop callback may call the store") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();
+        std::atomic<bool> called{false};
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        source->onStop = [raw, &called] {
+            static_cast<void>(raw->stats());
+            called = true;
+        };
+        const OriginId origin = store->attach(source).value();
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        waitUntil([&] { return gate.waiting() == 1; });  // the callback is registered
+        store->detach(origin);  // would deadlock if the stop were requested under the mutex
+        CHECK(called.load());
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach twice or of an unknown origin is harmless") {
+        const auto store = makeStore();
+        const OriginId origin = store->attach(makeSource()).value();
+        static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
+        store->detach(origin);
+        store->detach(origin);
+        store->detach(OriginId{999});
+        requireInvariants(*store);
+        const Result<ReadLease> refused =
+            syncWait(store->acquire({origin, 1}, hostView, *requester));
+        CHECK_FALSE(refused.has_value());
+        if (!refused) {
+            CHECK(refused.error().code == Errc::Internal);
+            CHECK(contains(refused.error().message, "is not attached"));
+        }
     }
 }

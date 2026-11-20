@@ -150,6 +150,8 @@ public:
     [[nodiscard]] std::optional<Domain> deviceDomain() const noexcept;   // {DeviceLocal, d, gen}
 
     [[nodiscard]] Result<OriginId> attach(std::shared_ptr<ISource> source);
+    // Cancels the origin's queued and running produce and conversion steps: their acquires end
+    // with Errc::Cancelled. Detaching an unknown origin does nothing.
     void detach(OriginId origin);
 
     // `key` and `want` are taken by value: the tasks are lazy, and a reference to a temporary
@@ -208,9 +210,10 @@ private:
         ViewSpec input_view);
     [[nodiscard]] Result<void> publishLocked(detail::Entry& entry, std::shared_ptr<IFrame>& frame,
                                              std::vector<detail::Waiter*>& woken);
+    // `cancelled`: the plan's origin was detached; the steps do not count in failures.
     void failStepsLocked(detail::Plan& plan, std::size_t from, const Error& error,
-                         std::vector<detail::Waiter*>& woken);
-    void failSteps(detail::Plan& plan, std::size_t from, const Error& error);
+                         std::vector<detail::Waiter*>& woken, bool cancelled);
+    void failSteps(detail::Plan& plan, std::size_t from, const Error& error, bool cancelled);
     static void wake(std::span<detail::Waiter* const> waiters) noexcept;
     void releaseReaderLocked(detail::Entry& entry) noexcept;
     void touchLocked(detail::Entry& entry) noexcept;

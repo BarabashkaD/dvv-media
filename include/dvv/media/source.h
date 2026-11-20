@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -62,6 +63,10 @@ public:
 
     [[nodiscard]] const FrameKey& key() const noexcept { return key_; }
     [[nodiscard]] IExecutor& io() const noexcept { return *io_; }
+    // Stopped when the key's origin is detached or the store is destroyed. A source may poll it;
+    // a produce that sees it stopped returns Errc::Cancelled. A source's stop callback only
+    // signals: it never blocks and never calls the store.
+    [[nodiscard]] std::stop_token stopToken() const noexcept { return stop_; }
     // A host frame for this key: `capacity` bytes aligned to `alignment`, frame data at
     // `data_offset`. Errc::Internal when desc differs from the source's, the alignment is not a
     // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (Task 7b: after
@@ -80,12 +85,13 @@ public:
 private:
     friend class FrameStore;
     ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key, FrameDesc desc,
-                   IExecutor& io) noexcept;
+                   IExecutor& io, std::stop_token stop) noexcept;
     FrameStore* store_;
     detail::Entry* output_;  // the step's pending output, which holds its reservation
     FrameKey key_;
     FrameDesc desc_;
     IExecutor* io_;
+    std::stop_token stop_;
     std::shared_ptr<IFrame> frame_;
 };
 
@@ -95,7 +101,8 @@ public:
     virtual ~ISource() = default;
     [[nodiscard]] virtual const SourceInfo& info() const noexcept = 0;
     // May be called concurrently for different indices. Errc::Internal for an index outside
-    // [0, frameCount); Errc::Io for read errors and truncated frames.
+    // [0, frameCount); Errc::Io for read errors and truncated frames; Errc::Cancelled when
+    // ctx.stopToken() is stopped.
     [[nodiscard]] virtual Task<Result<FrameRef>> produce(std::int64_t index,
                                                          ProduceContext& ctx) = 0;
 };

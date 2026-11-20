@@ -9,7 +9,9 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -46,12 +48,17 @@ Task<Result<FrameRef>> FakeSource::produce(std::int64_t index, ProduceContext& c
         co_return makeError(Errc::Internal, std::format("fake: frame {} out of range", index));
     }
     attempts.fetch_add(1);
+    std::optional<std::stop_callback<std::function<void()>>> stop_callback;
+    if (onStop) {
+        stop_callback.emplace(ctx.stopToken(), onStop);
+    }
     co_await resumeOn(ctx.io());
     if (gate != nullptr) {
         co_await gate->wait(ctx.io());
     }
+    sawStop.store(ctx.stopToken().stop_requested());
     if (takeOne(failNext)) {
-        co_return makeError(Errc::Io, "fake read error");
+        co_return makeError(failWith.load(), "fake read error");
     }
     if (throwNext.exchange(false)) {
         throw std::runtime_error("boom");
@@ -65,6 +72,7 @@ Task<Result<FrameRef>> FakeSource::produce(std::int64_t index, ProduceContext& c
     }
     if (afterAllocate != nullptr) {
         co_await afterAllocate->wait(ctx.io());
+        sawStop.store(ctx.stopToken().stop_requested());
     }
     if (takeOne(failAfterAllocate)) {
         co_return makeError(Errc::Io, "fake read error");

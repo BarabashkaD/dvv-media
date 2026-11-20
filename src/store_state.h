@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -80,6 +81,7 @@ struct Origin {
     std::shared_ptr<ISource> source;
     FrameDesc desc;
     FormatId unpacked = 0;
+    std::stop_source stop{};  // stopped when the origin is detached or the store is destroyed
 };
 
 struct Tier {
@@ -144,6 +146,7 @@ struct Plan {
     bool startPending = false;        // join `start` first; either way the plan holds one reader
     std::shared_ptr<ISource> source;  // Produce only (R11)
     std::vector<Step> steps;
+    std::stop_token stop{};  // the origin's: stopped when the origin is detached
 };
 struct Prepared {
     enum class Kind : std::uint8_t { Hit, Join, Plan };

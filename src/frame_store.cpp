@@ -131,13 +131,18 @@ void trimForRetry(FrameStore& store, const detail::StoreState& s, std::size_t ti
     store.trim(s.tiers[tier].domain, s.tiers[tier].budget / 2);
 }
 
+// The error of a step whose origin was detached.
+Error detachedError() {
+    return makeError(Errc::Cancelled, "the origin was detached").error();
+}
+
 }  // namespace
 
 // ---- ProduceContext ----
 
 ProduceContext::ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key,
-                               FrameDesc desc, IExecutor& io) noexcept
-    : store_(&store), output_(&output), key_(key), desc_(desc), io_(&io) {}
+                               FrameDesc desc, IExecutor& io, std::stop_token stop) noexcept
+    : store_(&store), output_(&output), key_(key), desc_(desc), io_(&io), stop_(std::move(stop)) {}
 
 Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc& desc,
                                                                 std::size_t capacity,
@@ -295,7 +300,16 @@ FrameStore::FrameStore(CreationKey<FrameStore> key, FrameStoreOptions options) n
     }
 }
 
-FrameStore::~FrameStore() = default;
+// No acquire holds the store now, so this reaches only work a source started outside the store.
+// Nothing else holds the state: no lock.
+FrameStore::~FrameStore() {
+    if (!state_) {
+        return;
+    }
+    for (auto& entry : state_->origins) {
+        entry.second.stop.request_stop();
+    }
+}
 
 Result<std::shared_ptr<FrameStore>> FrameStore::create(FrameStoreOptions options,
                                                        std::source_location where) {
@@ -459,7 +473,7 @@ Result<OriginId> FrameStore::attach(std::shared_ptr<ISource> source) {
     const FormatId unpacked = unpackedFormat(desc.format);
     detail::StoreState& s = *state_;
     // Declared before the lock: if emplace throws, the source is released after unlocking.
-    detail::Origin origin{std::move(source), desc, unpacked};
+    detail::Origin origin{std::move(source), desc, unpacked, std::stop_source{}};
     const std::scoped_lock lock(s.mutex);
     const OriginId id = s.nextOrigin;
     s.origins.emplace(id, std::move(origin));
@@ -472,40 +486,46 @@ void FrameStore::detach(OriginId origin) {
     // Released after unlocking.
     std::vector<std::shared_ptr<detail::Entry>> dropped;
     std::shared_ptr<ISource> source;
-    const std::scoped_lock lock(s.mutex);
-    std::size_t count = 0;
-    for (const auto& [key, record] : s.records) {
-        if (key.origin == origin) {
-            count += record.entries.size();
-        }
-    }
-    dropped.reserve(count);  // push_back below cannot throw
-    if (const auto found = s.origins.find(origin); found != s.origins.end()) {
-        source = std::move(found->second.source);
-        s.origins.erase(found);
-    }
-    for (auto record = s.records.begin(); record != s.records.end();) {
-        if (record->first.origin != origin) {
-            ++record;
-            continue;
-        }
-        for (std::shared_ptr<detail::Entry>& entry : record->second.entries) {
-            detail::Tier& tier = s.tiers[entry->tier];
-            if (entry->linked) {
-                tier.lru.erase(entry->lruPosition);
-                entry->linked = false;
+    // Stopped after unlocking: the stop callbacks run on this thread and may call the store.
+    std::stop_source stop{std::nostopstate};
+    {
+        const std::scoped_lock lock(s.mutex);
+        std::size_t count = 0;
+        for (const auto& [key, record] : s.records) {
+            if (key.origin == origin) {
+                count += record.entries.size();
             }
-            if (entry->counted) {
-                tier.bytes -= entry->bytes;
-                entry->counted = false;
-            }
-            // A running step keeps its reservation (its memory is alive) until it returns.
-            tier.detachedReserved += entry->reserved;
-            entry->inRecord = false;
-            dropped.push_back(std::move(entry));
         }
-        record = s.records.erase(record);
+        dropped.reserve(count);  // push_back below cannot throw
+        if (const auto found = s.origins.find(origin); found != s.origins.end()) {
+            source = std::move(found->second.source);
+            stop = std::move(found->second.stop);
+            s.origins.erase(found);
+        }
+        for (auto record = s.records.begin(); record != s.records.end();) {
+            if (record->first.origin != origin) {
+                ++record;
+                continue;
+            }
+            for (std::shared_ptr<detail::Entry>& entry : record->second.entries) {
+                detail::Tier& tier = s.tiers[entry->tier];
+                if (entry->linked) {
+                    tier.lru.erase(entry->lruPosition);
+                    entry->linked = false;
+                }
+                if (entry->counted) {
+                    tier.bytes -= entry->bytes;
+                    entry->counted = false;
+                }
+                // A running step keeps its reservation (its memory is alive) until it returns.
+                tier.detachedReserved += entry->reserved;
+                entry->inRecord = false;
+                dropped.push_back(std::move(entry));
+            }
+            record = s.records.erase(record);
+        }
     }
+    stop.request_stop();  // no effect for an unknown origin (no stop state)
 }
 
 // ---- Acquire ----
@@ -756,8 +776,10 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
         }
     }
     std::shared_ptr<ISource> source;
+    std::stop_token stop;  // never stops without an origin
     if (const auto origin = s.origins.find(key.origin); origin != s.origins.end()) {
         source = origin->second.source;
+        stop = origin->second.stop.get_token();
     }
     if (source && !has_root) {
         DVV_TRY(const FrameGeometry frame,
@@ -821,6 +843,7 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
     };
 
     detail::Plan plan;
+    plan.stop = std::move(stop);  // Produce and converter plans alike
     Fidelity fidelity = Fidelity::Exact;
     if (start) {
         plan.start = start;
@@ -863,14 +886,31 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             // Another acquire makes the input: wait for it on the CPU executor.
             const Result<void> joined = co_await detail::JoinAwaiter(s, input, *s.options.cpu);
             if (!joined) {
-                failSteps(plan, 0, joined.error());
-                co_return std::unexpected(joined.error());
+                const bool cancelled = plan.stop.stop_requested();
+                const Error error = cancelled ? detachedError() : joined.error();
+                failSteps(plan, 0, error, cancelled);
+                co_return std::unexpected(error);
             }
         }
         for (std::size_t index = 0; index < plan.steps.size(); ++index) {
             detail::Step& step = plan.steps[index];
+            if (plan.stop.stop_requested()) {
+                // The origin was detached before this step: it and the rest are cancelled.
+                const Error error = detachedError();
+                std::vector<detail::Waiter*> woken;
+                {
+                    const std::scoped_lock lock(s.mutex);
+                    if (input) {
+                        releaseReaderLocked(*input);
+                    }
+                    failStepsLocked(plan, index, error, woken, true);
+                }
+                wake(woken);
+                co_return std::unexpected(error);
+            }
             Result<std::shared_ptr<IFrame>> made = co_await runStep(plan, step, input, input_view);
-            if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory) {
+            if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory &&
+                !plan.stop.stop_requested()) {
                 // D10: evict the output's tier to half its budget, then run the step once more.
                 // (Produce is not retried here: allocateHost already retried.) The failed run's
                 // reservation is settled first and the retry's runStep reserves again, so the
@@ -884,10 +924,16 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             }
             std::vector<detail::Waiter*> woken;
             std::optional<Error> error;
+            bool cancelled = false;
             {
                 const std::scoped_lock lock(s.mutex);
                 settleLocked(*step.output);  // published or failed: no longer being made
-                if (made) {
+                if (plan.stop.stop_requested()) {
+                    // A step whose origin was detached when it ends is cancelled, whatever it
+                    // returned. A made frame stays in `made` and is released after unlocking.
+                    cancelled = true;
+                    error = detachedError();
+                } else if (made) {
                     // On failure the frame stays in `made` and is released after unlocking.
                     if (Result<void> published = publishLocked(*step.output, *made, woken);
                         !published) {
@@ -900,7 +946,7 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
                     releaseReaderLocked(*input);  // the step is done with its input
                 }
                 if (error) {
-                    failStepsLocked(plan, index, *error, woken);
+                    failStepsLocked(plan, index, *error, woken, cancelled);
                 }
             }
             wake(woken);
@@ -929,8 +975,15 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
     try {
         if (step.converter == nullptr) {
             co_await resumeOn(*s.options.cpu);  // D12: the hop before every Produce
+        }
+        if (plan.stop.stop_requested()) {
+            // Detached while the step was queued: neither the source nor the converter is
+            // called, and no counter counts the step.
+            co_return std::unexpected(detachedError());
+        }
+        if (step.converter == nullptr) {
             ProduceContext context(*this, *step.output, step.output->key, step.output->desc,
-                                   *s.options.io);
+                                   *s.options.io, plan.stop);
             const Result<FrameRef> produced =
                 co_await plan.source->produce(step.output->key.index, context);
             if (!produced) {
@@ -962,6 +1015,9 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
         made = makeError(Errc::Internal, std::format("{} threw: {}", name, thrown.what()));
     } catch (...) {
         made = makeError(Errc::Internal, std::format("{} threw", name));
+    }
+    if (plan.stop.stop_requested()) {
+        co_return made;  // runPlan cancels the step: no counter counts it
     }
     detail::ConverterSlot& counters = *s.slots[slot];
     counters.runs.fetch_add(1, std::memory_order_relaxed);
@@ -1023,9 +1079,9 @@ Result<void> FrameStore::publishLocked(detail::Entry& entry, std::shared_ptr<IFr
 }
 
 // Fails the pending outputs from step `from` on: their waiters get the error; the entries leave
-// the index (failures are not cached).
+// the index (failures are not cached). Cancelled steps do not count in failures.
 void FrameStore::failStepsLocked(detail::Plan& plan, std::size_t from, const Error& error,
-                                 std::vector<detail::Waiter*>& woken) {
+                                 std::vector<detail::Waiter*>& woken, bool cancelled) {
     for (std::size_t index = from; index < plan.steps.size(); ++index) {
         detail::Entry& entry = *plan.steps[index].output;
         if (entry.state != detail::EntryState::Pending) {
@@ -1039,15 +1095,18 @@ void FrameStore::failStepsLocked(detail::Plan& plan, std::size_t from, const Err
         }
         entry.waiters.clear();
         static_cast<void>(removeFromIndexLocked(entry));  // the plan still holds the entry
-        ++state_->counters.failures;
+        if (!cancelled) {
+            ++state_->counters.failures;
+        }
     }
 }
 
-void FrameStore::failSteps(detail::Plan& plan, std::size_t from, const Error& error) {
+void FrameStore::failSteps(detail::Plan& plan, std::size_t from, const Error& error,
+                           bool cancelled) {
     std::vector<detail::Waiter*> woken;
     {
         const std::scoped_lock lock(state_->mutex);
-        failStepsLocked(plan, from, error, woken);
+        failStepsLocked(plan, from, error, woken, cancelled);
     }
     wake(woken);
 }
