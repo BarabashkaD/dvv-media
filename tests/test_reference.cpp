@@ -154,6 +154,24 @@ TEST_CASE("round trip for every format") {
     }
 }
 
+TEST_CASE("pack into a span equals the vector form") {
+    for (const media::FormatId id : media::catalogue()) {
+        INFO(media::formatDesc(id).name);
+        const media::CodeValues x = noise(id, 6, 4, 3);
+        const auto frame = media::geometry(id, 6, 4);
+        REQUIRE(frame.has_value());
+        const std::vector<std::byte> expected = packOk(x);
+        std::vector<std::byte> out(frame->bytes, std::byte{0xA5});
+        const auto result = media::pack(x, out);
+        CHECK(result.has_value());
+        CHECK(out == expected);
+        std::vector<std::byte> shorter(frame->bytes - 1, std::byte{0xA5});
+        const auto short_result = media::pack(x, shorter);
+        REQUIRE_FALSE(short_result.has_value());
+        CHECK(short_result.error().code == dvv::Errc::Internal);
+    }
+}
+
 TEST_CASE("pack of unpack clears exactly the padding") {
     for (const media::FormatId id : media::catalogue()) {
         const std::uint32_t width = oddWidth(id);

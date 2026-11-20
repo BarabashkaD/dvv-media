@@ -91,6 +91,22 @@ Result<std::vector<std::byte>> pack(const CodeValues& values) {
     if (!frame) {
         return std::unexpected(std::move(frame.error()));
     }
+    std::vector<std::byte> bytes(frame->bytes);
+    if (auto packed = pack(values, bytes); !packed) {
+        return std::unexpected(std::move(packed.error()));
+    }
+    return bytes;
+}
+
+Result<void> pack(const CodeValues& values, std::span<std::byte> out) {
+    auto frame = geometry(values.format, values.width, values.height);
+    if (!frame) {
+        return std::unexpected(std::move(frame.error()));
+    }
+    if (out.size() != frame->bytes) {
+        return makeError(Errc::Internal, std::format("pack: the output holds {} bytes, expected {}",
+                                                     out.size(), frame->bytes));
+    }
     const PixelFormatDesc& d = formatDesc(values.format);
     const std::array<std::uint32_t, MAX_COMPONENTS> widths =
         gridWidths(values.format, d, values.width, values.height);
@@ -120,15 +136,15 @@ Result<std::vector<std::byte>> pack(const CodeValues& values) {
                             i % widths[c], i / widths[c], bits));
         }
     }
-    std::vector<std::byte> bytes(frame->bytes);
+    std::ranges::fill(out, std::byte{0});
     forEachSample(d, *frame, values.width, widths,
-                  [&bytes, &values](std::size_t c, std::size_t i, std::size_t at,
-                                    const PlaneDesc& plane, unsigned shift) {
-                      const std::uint32_t word = readWord(bytes, at, plane) |
+                  [out, &values](std::size_t c, std::size_t i, std::size_t at,
+                                 const PlaneDesc& plane, unsigned shift) {
+                      const std::uint32_t word = readWord(out, at, plane) |
                                                  (std::uint32_t{values.components[c][i]} << shift);
-                      writeWord(bytes, at, plane, word);
+                      writeWord(out, at, plane, word);
                   });
-    return bytes;
+    return {};
 }
 
 Result<CodeValues> unpack(FormatId format, std::uint32_t width, std::uint32_t height,

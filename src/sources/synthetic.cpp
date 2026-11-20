@@ -159,14 +159,10 @@ public:
         const std::uint64_t seed = pattern_ == detail::Pattern::Noise ? seed_ : 0;
         const CodeValues values =
             co_try(detail::generate(pattern_, desc.format, desc.width, desc.height, seed, index));
-        const std::vector<std::byte> bytes = co_try(pack(values));
+        const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::shared_ptr<HostFrame> frame =
-            co_try(ctx.allocateHost(desc, bytes.size(), FRAME_ALIGNMENT, 0));
-        const std::span<std::byte> data = frame->data();
-        if (data.size() != bytes.size()) {
-            co_return makeError(Errc::Internal, "synthetic: the host frame has another size");
-        }
-        std::ranges::copy(bytes, data.begin());
+            co_try(ctx.allocateHost(desc, layout.bytes, FRAME_ALIGNMENT, 0));
+        co_try(pack(values, frame->data()));
         co_return ctx.publish(frame);
     }
 
