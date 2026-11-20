@@ -11,7 +11,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>

@@ -15,6 +15,7 @@
 #include <system_error>
 #include <utility>
 
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/uri_colour.h"
 
 namespace dvv::media {

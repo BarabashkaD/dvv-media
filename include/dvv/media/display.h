@@ -26,7 +26,7 @@ namespace dvv::media {
 [[nodiscard]] bool isDisplay(FormatId format) noexcept;
 // {Rgb, Full, Linear, Bt709}.
 [[nodiscard]] ColourId displayColour();
-// {displayFormat(), displayColour(), LayoutPolicy::Any, Api::VkImage, device_domain, 0}.
+// {displayFormat(), displayColour(), LayoutPolicy::Any, vulkan::IMAGE, device_domain, 0}.
 [[nodiscard]] ViewSpec displayView(const Domain& device_domain);
 
 // Which fields resolveColour() filled in because the frame left them Unspecified.
