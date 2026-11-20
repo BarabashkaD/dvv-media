@@ -1,6 +1,6 @@
 # dvv-media
 
-Media layer of the dvv stack used by rawreel: pixel formats, frames, the frame store and sources.
+Media layer of the dvv stack: pixel formats, frames, the frame store and sources.
 C++23; depends on [dvv-base](https://github.com/BarabashkaD/dvv-base),
 [dvv-registry](https://github.com/BarabashkaD/dvv-registry),
 [dvv-platform](https://github.com/BarabashkaD/dvv-platform) and
@@ -39,7 +39,8 @@ dvv_link_components(my_app dvv::media_sources)
 
 ## Pixel formats
 
-A format is a `PixelFormatDescriptor` (`dvv/media/pixel_format.h`) named by a `FormatId`. The 37
+A format is a `PixelFormatDesc` (`dvv/media/pixel_format.h`) named by a `FormatId`; `formatDesc(id)`
+returns it. The 37
 built-in formats have the ids 0 to 36 in the order below. Names are FFmpeg `pix_fmt` names (`v210`
 is the codec name); `findFormat(name)` matches them exactly and case-sensitively.
 
@@ -144,27 +145,30 @@ It offers views, described by a `ViewSpec`:
 | --- | --- |
 | `format` | the original format, or its unpacked form `unpackedFormat(format)` (the planes) |
 | `colour` | a `ColourId`; must equal the frame's own |
-| `layout` | `Any`, `Tight`, `RowAlign256` or `VkOptimal` |
-| `api` | `Api::HostPlanes`, `Api::VkBuffer` or `Api::VkImage` |
+| `layout` | a `LayoutPolicy`: `Any`, `Tight`, `RowAlign256` or `Opaque` (the GPU image's own layout) |
+| `api` | a `BindingKind` (today `Api`): `BindingKind::HostPlanes`, `vulkan::BUFFER` or `vulkan::IMAGE` |
 | `domain` | a `Domain`: `MemKind` (`Host`, `HostVisible`, `DeviceLocal`), device and generation |
 | `downscaleLog2` | must be 0 |
 
 The bindings are `HostPlanesB` (read-only spans and strides per plane), `VkBufferB` (the whole
 original in one buffer) and `VkImageB` (one `R8_UINT`/`R16_UINT` image per component, layout
-`GENERAL`). The store's domains are `hostDomain()`, and with a GPU `stagingDomain()` and
+`GENERAL`). `bindingIf<B>(binding)` gives the binding as a `B`, or null when it holds
+another kind. Compare a `BindingKind` with `==` only; do not switch on it, cast it or hash it: it
+becomes a class in 1.0.0. A file that names `VkBufferB`, `VkImageB`, `StagingFrame`, `VkBufferFrame` or
+`VkPlanesFrame` includes `dvv/media/frame_vulkan.h`. The store's domains are `hostDomain()`, and with a GPU `stagingDomain()` and
 `deviceDomain()`. A view's `Fidelity` is `Exact` (the original bytes), `Lossless` (the unpacked
 planes) or `Derived` (the display view).
 
-| Format | Api | Memory | Made by | Fidelity |
+| Format | Binding | Memory | Made by | Fidelity |
 | --- | --- | --- | --- | --- |
 | original | `HostPlanes` | `Host` | `Produce` (the source) | Exact |
 | planes | `HostPlanes` | `Host` | `CpuUnpack` | Lossless |
-| original | `VkBuffer` | `HostVisible` | `HostToStaging` | Exact |
-| original | `VkBuffer` | `DeviceLocal` | `Upload` | Exact |
-| planes | `VkImage` | `DeviceLocal` | `GpuUnpack` | Lossless |
+| original | `vulkan::BUFFER` | `HostVisible` | `HostToStaging` | Exact |
+| original | `vulkan::BUFFER` | `DeviceLocal` | `Upload` | Exact |
+| planes | `vulkan::IMAGE` | `DeviceLocal` | `GpuUnpack` | Lossless |
 | original | `HostPlanes` | `HostVisible` | `Readback` | Exact |
 | planes | `HostPlanes` | `HostVisible` | `Readback` | Lossless |
-| display | `VkImage` | `DeviceLocal` | `ToDisplay` | Derived |
+| display | `vulkan::IMAGE` | `DeviceLocal` | `ToDisplay` | Derived |
 
 A host-only store (no GPU context) has only the first two rows. The store takes the cheapest path
 with at most `maxPlanDepth` converters; any other view is `Errc::Unsupported`.
@@ -174,15 +178,22 @@ auto store = FrameStore::create({.cpu = pool, .io = pool, .gpu = context}).value
 const FrameDesc desc = source->info().desc;
 const OriginId origin = store->attach(std::move(source)).value();
 Result<ReadLease> lease = co_await store->acquire(
-    {origin, 0}, planesView(desc, Api::HostPlanes, store->hostDomain()), executor);
+    {origin, 0}, planesView(desc, BindingKind::HostPlanes, store->hostDomain()), executor);
 ```
 
-- `acquire(key, want, resume_on)` returns a `ReadLease`: the view, its `binding()`, `fidelity()`
-  and `desc()`. An existing view is reused and one being made is joined; otherwise the store runs
-  the converters.
-- `pin(key, view, resume_on)` returns a `PinLease`, the same handle counted as a pin.
-- `acquireOriginal(key, api, domain, resume_on, require_exact = false)` returns an `OriginalRead`:
-  the unpacked planes by default, the original format with `require_exact`.
+- `acquire(key, want, resume_on)` returns a `ReadLease`, `pin(key, view, resume_on)` a
+  `PinLease`. Both are `Lease<LeaseKind>`: a move-only handle that keeps one view alive; a pin
+  counts as a pin, not a reader.
+- A lease gives the view's `binding()`, `fidelity()` and `desc()`. An existing view is reused and
+  one being made is joined; otherwise the store runs the converters.
+- `lease.share()` makes a second lease on the same view. It is counted like any lease and
+  listed in `outstandingLeases()` with its own location, so every holder of a frame is visible.
+- `lease.planes()` gives the host planes of a host view. GPU resources are reached through the
+  lease with `vulkan::image(lease, plane)` and `vulkan::buffer(lease)` (`dvv/media/frame_vulkan.h`);
+  they are valid while the lease, or a share of it, lives. Keep a share beside any pointer you
+  store.
+- `acquireOriginal(key, {.api, .domain, .fidelity}, resume_on)` returns an `OriginalRead`:
+  `OriginalFidelity::Lossless` gives the unpacked planes, `Exact` the original format.
 - `adopt(key, frame)` puts a ready frame into the store as the key's original.
 - The awaiting coroutine always resumes on `resume_on`, never inline; it must outlive the
   operation.
@@ -202,7 +213,9 @@ with the `source_location` of each request.
 | `deviceBudget` | 0 = half of the device-local memory | device tier (`DeviceLocal`) |
 | `maxPlanDepth` | 6 | converters per plan |
 
-Each domain is one LRU tier kept to its budget; leased and pinned views are never evicted.
+Each domain is one LRU tier kept to its budget. A tier counts published frames (`bytes`) and
+frames being made (`pending`, from allocation to publish); eviction keeps the sum under the budget
+and never evicts a leased or pinned frame.
 `trim(domain, target_bytes)` evicts one tier down to `target_bytes`. `stats()` returns `StoreStats`:
 one `TierStats` per tier, the counters `frames`, `leases`, `pins`, `hits`, `misses`, `creations`,
 `evictions`, `failures`, and one `ConverterStats` `{name, runs, bytes, nanoseconds}` per converter
@@ -210,10 +223,19 @@ name.
 
 ## Sources
 
-`SourceFactory::create(registry, io)` (`dvv/media/source_factory.h`) creates one instance of every
-`Kind::Source` component in the registry. `open(request)` returns a source or `Ambiguous`. A
-`SourceRequest` holds the `Uri` and an optional `FormatHint`. A bare path means `file:`. Unknown
-query parameters are `Errc::Format` "unknown parameter 'x'"; `impl=<id>` picks a provider.
+`SourceFactory::create(registry, io)` (`dvv/media/source_factory.h`) makes the factory. The
+factory creates one instance of every component registered for `ISourceProvider`. `open(request)`
+returns a source or `Ambiguous`; `open(request, stop)` ends with `Errc::Cancelled` when the token
+stops first. A no-match error names the providers that are unavailable here, with the reason
+(`unavailableProviders()`). A source receives `ctx.stopToken()` in `produce`; detaching its origin
+stops it, and queued requests of that origin end with `Errc::Cancelled`.
+`dvv/media/rate_size_text.h` is the size and rate grammar (`parseSize`, `parseDimension`,
+`parseFps`, `formatFps`); `29.97` is `2997/100`. A request reads files with `DEFAULT_FILE_READS`
+unless it says otherwise; a source whose input states no rate reports `FALLBACK_FPS` (25).
+
+A `SourceRequest` holds the `Uri`, an optional `FormatHint` and the file-read mode. A bare path
+means `file:`. Unknown query parameters are `Errc::Format` "unknown parameter 'x'"; `impl=<id>`
+picks a provider.
 
 Shared parameters: `size=WxH`, or `w=` and `h=` together (each 1–65535); `fps=N`, `N/D` or `I.F`
 (`29.97` is `2997/100`); `fmt` takes a catalogue name.
@@ -336,8 +358,10 @@ provider above 0 is `Errc::Unsupported` with every provider's reason.
 `size` and `fps`, plus the colour parameters given, `frames` and `seed` for synthetic, `fmt=@<path>`
 and `clip=@<path>` for raw and `impl=y4m` for y4m. The sidecar is not written; it is read again on
 every open. `SourceInfo` also names the `provider`, the `warnings` and, for
-files, the `reader` (`FileReader::modeText()`). File sources read as `SourceRequest::fileReads`
-says (`FileReadMode::Auto` by default), one read at a time.
+files, the `reader` (`FileReader::modeText()`). `fixed` says which of format, size and rate the
+source's own header fixes (Y4M: all three; raw and synthetic: none); an application does not
+offer to change a fixed field. File sources read as `SourceRequest::fileReads` says
+(`DEFAULT_FILE_READS`, `FileReadMode::Auto`, by default), one read at a time.
 
 ```text
 clip_64x32_nv12_50.yuv
@@ -350,8 +374,9 @@ clip.y4m                     (a 64x32 4:2:0 file with F50:1)
 
 `dvv/media/display.h` defines the display view, made on the GPU: `displayFormat()` is
 `rgba16f@display` (linear light), `displayColour()` is `{rgb, full, linear, bt709}`, and
-`displayView(store->deviceDomain().value())` is the `ViewSpec` to acquire (one
-`R16G16B16A16_SFLOAT` image, layout `GENERAL`). A host-only store has no path to it.
+`displayView(store->deviceDomain().value())` is the `ViewSpec` to acquire: an RGBA16F image
+(`DISPLAY_IMAGE_FORMAT` in `dvv/media/display_vulkan.h`), layout `GENERAL`. A host-only
+store has no path to it.
 
 `ToDisplay` (`shaders/to_display.slang`, CPU reference `toDisplayReference()`) maps code values to
 R'G'B' (`displayAffine()`: range, matrix, component order), clamps, applies the transfer's EOTF
@@ -410,7 +435,27 @@ then cover the format. A Y4M `C` tag needs a line in `src/sources/y4m.cpp`.
 
 ## Paths
 
-URI and command-line paths are UTF-8 (`dvv::media::pathFromUtf8`, `utf8FromPath`); they never pass
-through the ANSI code page. Invalid UTF-8 becomes U+FFFD.
+URI and command-line paths are UTF-8; they never pass through the ANSI code page. Path text comes
+from dvv-base (`dvv/base/utf8.h`): `dvv::pathText` names a file again, `dvv::pathDisplayText` is for
+messages, `dvv::pathFromText` turns text into a path. dvv-media's `pathFromUtf8` and `utf8FromPath`
+forward to them until 1.0.0. On POSIX a path keeps bytes that are not UTF-8; on Windows they
+become U+FFFD.
+
+## Deprecated (removed in 1.0.0)
+
+- `VkBufferB::buffer`, `VkImageB::planes` and `StagingFrame::buffer()`: use
+  `vulkan::buffer(lease)` and `vulkan::image(lease, plane)`. The GPU frame classes and the
+  `VkBufferB` and `VkImageB` bindings move from frame.h to frame_vulkan.h, and frame.h names no
+  dvv-gpu type.
+- `Api::VkBuffer` and `Api::VkImage`: use `vulkan::BUFFER` and `vulkan::IMAGE`.
+  `LayoutPolicy::VkOptimal`: use `LayoutPolicy::Opaque`.
+- Reading a `Binding` with `std::get_if`, `std::get`, `std::visit` or `std::holds_alternative`:
+  use `bindingIf<B>(binding)` or `Lease::planes()`. `Binding` becomes a class.
+- `acquireOriginal(key, api, domain, resume_on, require_exact)`: use the request form.
+- `PixelFormatDescriptor` and `descriptor(FormatId)`: use `PixelFormatDesc` and `formatDesc`.
+- `pathFromUtf8` and `utf8FromPath`: use `dvv::pathFromText`, `dvv::pathText` or
+  `dvv::pathDisplayText`.
+- `InterfaceKind<ISourceProvider>`: the registry lists source providers by interface.
+- The `SourceFactory` constructor without the unavailable list (for `create()` only).
 
 Licence: MIT.
