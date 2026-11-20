@@ -35,6 +35,13 @@ GitHub Releases).
 - Requires dvv-base 0.5.0, dvv-registry 0.2.0, dvv-platform 0.3.0 and dvv-gpu 0.3.0.
 - `ReadLease` and `PinLease` are one class template, `Lease<LeaseKind>`; both names stay as
   aliases.
+- Because `ReadLease` and `PinLease` are now aliases of `Lease<K>`, a forward declaration
+  `class ReadLease;` or `class PinLease;` no longer compiles: include `dvv/media/frame_store.h`
+  instead. This is the one rename in 0.2.0 where the old name is not the declared entity.
+- Taking the address of `SourceFactory::open` or `FrameStore::acquireOriginal` without a cast is
+  now ambiguous: each gained an overload.
+- `SourceFactory::create`'s "no source providers registered" error now ends with the list of
+  unavailable providers.
 - An explicit destructor call such as `p->~ReadLease()` now needs the alias visible where it is
   written (for example `using dvv::media::ReadLease;`); `std::destroy_at(p)` needs nothing.
 - A tier counts the memory of frames that are being made, from allocation to publish; eviction
