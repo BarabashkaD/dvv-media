@@ -1734,7 +1734,8 @@ TEST_SUITE("store") {
             gate.open();
         });
         // Only the counts are checked: the acquire's own result is not part of this case.
-        static_cast<void>(syncWait(store->acquire({origin, 0}, hostView, *requester)));
+        [[maybe_unused]] const auto acquired =
+            syncWait(store->acquire({origin, 0}, hostView, *requester));
         opener.join();
         CHECK(reached);
         CHECK(before_detach == CAPACITY);
@@ -1762,7 +1763,8 @@ TEST_SUITE("store") {
             detached = hostDetachedReserved(*store);
             gate.open();
         });
-        static_cast<void>(syncWait(store->acquire({origin, 0}, hostView, *requester)));
+        [[maybe_unused]] const auto acquired =
+            syncWait(store->acquire({origin, 0}, hostView, *requester));
         opener.join();
         CHECK(reached);
         CHECK_MESSAGE(invariants.has_value(),
