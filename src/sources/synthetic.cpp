@@ -26,6 +26,7 @@
 #include "dvv/base/uri.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
@@ -98,7 +99,7 @@ Result<Parsed> parse(const Uri& uri) {
 
     Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(fps, detail::parseFps(*text));
+        DVV_TRY(fps, parseFps(*text));
     }
     std::uint64_t frames = DEFAULT_FRAMES;
     if (const auto text = uri.param("frames")) {
@@ -118,8 +119,10 @@ Result<Parsed> parse(const Uri& uri) {
     resolved.scheme = "synthetic";
     resolved.path = uri.path;
     resolved.params = {
-        {"fmt", descriptor(format).name},         {"size", std::format("{}x{}", width, height)},
-        {"fps", detail::formatFps(fps)},          {"frames", std::format("{}", frames)},
+        {"fmt", descriptor(format).name},
+        {"size", std::format("{}x{}", width, height)},
+        {"fps", formatFps(fps)},
+        {"frames", std::format("{}", frames)},
         {"seed", std::format("{}", parsed.seed)},
     };
     std::ranges::move(colourParameters(colour_spec), std::back_inserter(resolved.params));

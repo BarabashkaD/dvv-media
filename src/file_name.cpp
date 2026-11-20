@@ -10,6 +10,7 @@
 
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/types.h"
 #include "sources/uri_params.h"
 
@@ -33,7 +34,7 @@ std::optional<Rational> fpsToken(std::string_view token) {
     if (!shaped) {
         return std::nullopt;
     }
-    const Result<Rational> fps = detail::parseFps(token);
+    const Result<Rational> fps = parseFps(token);
     if (!fps) {
         return std::nullopt;
     }
@@ -56,7 +57,7 @@ std::optional<std::pair<std::uint32_t, std::uint32_t>> sizeToken(std::string_vie
         !isDigits(token.substr(x + 1))) {
         return std::nullopt;
     }
-    const auto size = detail::parseSize(token);
+    const auto size = parseSize(token);
     if (!size) {
         return std::nullopt;
     }

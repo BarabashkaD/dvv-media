@@ -33,6 +33,7 @@
 #include "dvv/media/format_json.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
@@ -205,7 +206,7 @@ Known gather(const SourceRequest& request) {
     }
 
     if (const auto text = uri.param("fps")) {
-        if (const auto fps = detail::parseFps(*text)) {
+        if (const auto fps = parseFps(*text)) {
             known.fps = *fps;
         }
     } else if (hint.fps) {
@@ -312,7 +313,7 @@ Result<Opened> openFile(const SourceRequest& request) {
 
     Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(fps, detail::parseFps(*text));
+        DVV_TRY(fps, parseFps(*text));
     } else if (hint.fps) {
         fps = *hint.fps;
     } else if (clip && clip->fps) {
@@ -337,7 +338,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     resolved.params = {
         {"fmt", fmt_param},
         {"size", std::format("{}x{}", width, height)},
-        {"fps", detail::formatFps(fps)},
+        {"fps", formatFps(fps)},
     };
     if (const auto value = uri.param("clip")) {
         resolved.params.emplace_back("clip", std::string(*value));

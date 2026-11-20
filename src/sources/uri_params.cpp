@@ -17,7 +17,7 @@
 
 #include "dvv/media/uri_colour.h"
 
-namespace dvv::media::detail {
+namespace dvv::media {
 
 namespace {
 
@@ -110,6 +110,8 @@ std::string formatFps(Rational fps) {
     return std::format("{}/{}", fps.num, fps.den);
 }
 
+namespace detail {
+
 Result<std::uint64_t> parseUnsigned(std::string_view name, std::string_view text) {
     if (const auto value = parseDigits(text)) {
         return *value;
@@ -150,4 +152,6 @@ Result<std::optional<std::pair<std::uint32_t, std::uint32_t>>> sizeFromQuery(con
     return std::pair{w, h};
 }
 
-}  // namespace dvv::media::detail
+}  // namespace detail
+
+}  // namespace dvv::media

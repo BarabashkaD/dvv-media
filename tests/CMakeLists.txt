@@ -7,6 +7,7 @@ add_executable(dvv_media_tests
     neutral_headers/frame_store_h.cpp
     neutral_headers/frame_vulkan_h.cpp
     neutral_headers/pixel_format_h.cpp
+    neutral_headers/rate_size_text_h.cpp
     neutral_headers/source_h.cpp
     neutral_headers/types_h.cpp
     store_fakes.cpp

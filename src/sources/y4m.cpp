@@ -29,6 +29,7 @@
 #include "dvv/base/utf8.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
@@ -219,17 +220,17 @@ Result<void> checkQuery(const Uri& uri, const detail::Y4mHeader& header) {
         return makeError(Errc::Format, std::format("Y4M header says {}", name));
     }
     if (const auto text = uri.param("size")) {
-        DVV_TRY(const auto size, detail::parseSize(*text));
+        DVV_TRY(const auto size, parseSize(*text));
         if (size != std::pair{header.width, header.height}) {
             return makeError(Errc::Format,
                              std::format("Y4M header says {}x{}", header.width, header.height));
         }
     }
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(const Rational fps, detail::parseFps(*text));
+        DVV_TRY(const Rational fps, parseFps(*text));
         if (fps != header.fps) {
             return makeError(Errc::Format,
-                             std::format("Y4M header says {}", detail::formatFps(header.fps)));
+                             std::format("Y4M header says {}", formatFps(header.fps)));
         }
     }
     return {};
@@ -288,7 +289,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     resolved.params = {
         {"fmt", std::string(descriptor(header.format).name)},
         {"size", std::format("{}x{}", header.width, header.height)},
-        {"fps", detail::formatFps(header.fps)},
+        {"fps", formatFps(header.fps)},
     };
     std::ranges::move(colourParameters(query_spec), std::back_inserter(resolved.params));
     resolved.params.emplace_back("impl", "y4m");

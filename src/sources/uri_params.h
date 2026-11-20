@@ -15,20 +15,12 @@
 
 #include "dvv/base/error.h"
 #include "dvv/base/uri.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
 
 namespace dvv::media::detail {
 
-// "WxH", both 1..65535 decimal. Errc::Format "bad size 'x' (expected WxH)".
-[[nodiscard]] Result<std::pair<std::uint32_t, std::uint32_t>> parseSize(std::string_view text);
-// One dimension 1..65535 for w=/h=. Errc::Format naming the parameter.
-[[nodiscard]] Result<std::uint32_t> parseDimension(std::string_view name, std::string_view text);
-// "N", "N/D" (integers > 0) or "I.F" (decimal; 29.97 -> 2997/100), reduced by the gcd.
-// Errc::Format "bad fps 'x'".
-[[nodiscard]] Result<Rational> parseFps(std::string_view text);
-// "N" when den == 1, else "N/D" (the resolved-URI form).
-[[nodiscard]] std::string formatFps(Rational fps);
 // Unsigned decimal integer. Errc::Format naming the parameter.
 [[nodiscard]] Result<std::uint64_t> parseUnsigned(std::string_view name, std::string_view text);
 // A provider's own parameter names followed by COLOUR_PARAMETERS (dvv/media/uri_colour.h), for

@@ -54,7 +54,8 @@ target_include_directories(dvv_media PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(dvv_media PUBLIC dvv::base dvv::registry dvv::platform dvv::gpu)
-# src/sources/uri_params.h: shared by the sources and parseFileName() (file_name.h).
+# src/sources/uri_params.h: shared by the sources and parseFileName() (file_name.h); its .cpp also
+# holds the bodies of the public size and rate grammar (dvv/media/rate_size_text.h).
 target_include_directories(dvv_media PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 dvv_set_compiler_options(dvv_media)
 # The GPU unpack shader (M2 design §5.4) and the ToDisplay shader (M3 design D3-D5), embedded as

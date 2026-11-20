@@ -11,6 +11,7 @@
 #include "dvv/base/error.h"
 #include "dvv/base/uri.h"
 #include "dvv/media/colour_preset.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
 #include "sources/uri_params.h"
@@ -29,45 +30,56 @@ dvv::Uri uri(std::string_view text) {
 }  // namespace
 
 TEST_CASE("uri params: parseSize reads WxH") {
-    const auto size = params::parseSize("34x17");
+    const auto size = media::parseSize("34x17");
     REQUIRE(size.has_value());
     CHECK(*size == std::pair<std::uint32_t, std::uint32_t>{34, 17});
 
     for (const std::string_view bad : {"0x5", "34x", "34*17"}) {
         CAPTURE(bad);
-        const auto parsed = params::parseSize(bad);
+        const auto parsed = media::parseSize(bad);
         REQUIRE_FALSE(parsed.has_value());
         CHECK(parsed.error().code == dvv::Errc::Format);
     }
-    const auto large = params::parseSize("65536x1");
+    const auto large = media::parseSize("65536x1");
     REQUIRE_FALSE(large.has_value());
     CHECK(large.error().message == "bad size '65536x1' (expected WxH)");
 }
 
 TEST_CASE("uri params: parseFps reads integers, fractions and decimals") {
-    CHECK(params::parseFps("25") == media::Rational{25, 1});
-    CHECK(params::parseFps("30000/1001") == media::Rational{30000, 1001});
-    CHECK(params::parseFps("29.97") == media::Rational{2997, 100});
-    CHECK(params::parseFps("50/2") == media::Rational{25, 1});
-    CHECK(params::parseFps("12.5") == media::Rational{25, 2});
+    CHECK(media::parseFps("25") == media::Rational{25, 1});
+    CHECK(media::parseFps("30000/1001") == media::Rational{30000, 1001});
+    CHECK(media::parseFps("29.97") == media::Rational{2997, 100});
+    CHECK(media::parseFps("50/2") == media::Rational{25, 1});
+    CHECK(media::parseFps("12.5") == media::Rational{25, 2});
 
     for (const std::string_view bad : {"0", "1/0", "x"}) {
         CAPTURE(bad);
-        const auto parsed = params::parseFps(bad);
+        const auto parsed = media::parseFps(bad);
         REQUIRE_FALSE(parsed.has_value());
         CHECK(parsed.error().code == dvv::Errc::Format);
         CHECK(parsed.error().message == "bad fps '" + std::string(bad) + "'");
     }
 }
 
+TEST_CASE("uri params: parseFps keeps decimals exact") {
+    CHECK(media::parseFps("29.97") == media::Rational{2997, 100});
+    CHECK(media::parseFps("25.123456789").has_value());
+    const auto too_long = media::parseFps("25.1234567891");
+    CHECK_FALSE(too_long.has_value());
+    if (!too_long) {
+        CHECK(too_long.error().code == dvv::Errc::Format);
+    }
+    CHECK(media::formatFps(media::Rational{30000, 1001}) == "30000/1001");
+}
+
 TEST_CASE("uri params: formatFps writes the resolved-URI form") {
-    CHECK(params::formatFps(media::Rational{25, 1}) == "25");
-    CHECK(params::formatFps(media::Rational{30000, 1001}) == "30000/1001");
+    CHECK(media::formatFps(media::Rational{25, 1}) == "25");
+    CHECK(media::formatFps(media::Rational{30000, 1001}) == "30000/1001");
 }
 
 TEST_CASE("uri params: parseDimension and parseUnsigned name the parameter") {
-    CHECK(params::parseDimension("w", "3") == std::uint32_t{3});
-    const auto zero = params::parseDimension("w", "0");
+    CHECK(media::parseDimension("w", "3") == std::uint32_t{3});
+    const auto zero = media::parseDimension("w", "0");
     REQUIRE_FALSE(zero.has_value());
     CHECK(zero.error().code == dvv::Errc::Format);
     CHECK(zero.error().message.starts_with("bad w "));
