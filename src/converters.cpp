@@ -21,6 +21,7 @@
 #include "dvv/base/task.h"
 #include "dvv/gpu/command_recorder.h"
 #include "dvv/gpu/compute_pipeline.h"
+#include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/display.h"
@@ -176,10 +177,10 @@ public:
         const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::uint64_t size = unpackBufferBytes(0, layout.bytes);
         std::shared_ptr<gpu::GpuBuffer> buffer =
-            co_try(context_->createBuffer({.size = size,
-                                           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                           .memory = gpu::MemoryUsage::HostUpload,
-                                           .name = frameName("staging", input.key)}));
+            co_try(gpu::createBuffer(*context_, {.size = size,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .memory = gpu::MemoryUsage::HostUpload,
+                                                 .name = frameName("staging", input.key)}));
         const std::span<std::byte> mapped = buffer->mapped();
         if (mapped.size() < size) {
             co_return makeError(
@@ -219,15 +220,19 @@ public:
         const VkBufferB source = co_try(bufferOf(input, name()));
         const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::uint64_t bytes = layout.bytes;
-        std::shared_ptr<gpu::GpuBuffer> device = co_try(context_->createBuffer(
-            {.size = unpackBufferBytes(0, bytes),
-             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-             .memory = gpu::MemoryUsage::DeviceOnly,
-             .name = frameName("original", input.key)}));
+        std::shared_ptr<gpu::GpuBuffer> device =
+            co_try(gpu::createBuffer(*context_, {.size = unpackBufferBytes(0, bytes),
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .memory = gpu::MemoryUsage::DeviceOnly,
+                                                 .name = frameName("original", input.key)}));
         // The record function holds both buffers until the GPU is done (D10).
-        co_try(co_await context_->submit(
-            *cpu_, [source, device, bytes](gpu::CommandRecorder& recorder) {
-                recorder.copyBuffer(*source.buffer, source.offset, *device, 0, bytes);
+        co_try(co_await gpu::submit(
+            *context_, *cpu_, [source, device, bytes](gpu::CommandRecorder& recorder) {
+                recorder.copyBuffer(
+                    *source.buffer, *device,
+                    gpu::BufferCopy{
+                        .sourceOffset = source.offset, .destinationOffset = 0, .size = bytes});
             }));
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<VkBufferFrame>(
             context.store, desc, context.output.domain, std::move(device), layout));
@@ -263,7 +268,8 @@ public:
         std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
         for (std::size_t c = 0; c < d.componentCount; ++c) {
             const auto [w, h] = componentSize(desc.format, c, desc.width, desc.height);
-            planes[c] = co_try(context_->createImage(
+            planes[c] = co_try(gpu::createImage(
+                *context_,
                 {.width = w,
                  .height = h,
                  .format = unpackedImageFormat(d.components[c]),
@@ -276,15 +282,17 @@ public:
         // is read after the submission completed. The record function holds the input buffer, the
         // images and the pipeline until the GPU is done (D10).
         auto checked = std::make_shared<Result<void>>();
-        co_try(co_await context_->submit(*cpu_, [pipeline = pipeline_, input, planes, desc, count,
-                                                 checked](gpu::CommandRecorder& recorder) {
-            std::array<gpu::GpuImage*, MAX_COMPONENTS> targets{};
-            for (std::size_t c = 0; c < count; ++c) {
-                targets[c] = planes[c].get();
-            }
-            *checked = recordUnpack(recorder, *pipeline, *input.buffer, input.offset, desc,
-                                    std::span<gpu::GpuImage* const>(targets).first(count));
-        }));
+        co_try(co_await gpu::submit(*context_, *cpu_,
+                                    [pipeline = pipeline_, input, planes, desc, count,
+                                     checked](gpu::CommandRecorder& recorder) {
+                                        std::array<gpu::GpuImage*, MAX_COMPONENTS> targets{};
+                                        for (std::size_t c = 0; c < count; ++c) {
+                                            targets[c] = planes[c].get();
+                                        }
+                                        *checked = recordUnpack(
+                                            recorder, *pipeline, *input.buffer, input.offset, desc,
+                                            std::span<gpu::GpuImage* const>(targets).first(count));
+                                    }));
         co_try(std::move(*checked));
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<VkPlanesFrame>(
             context.store, desc, unpacked, desc.colour, context.output.domain, planes, count));
@@ -318,14 +326,18 @@ public:
         const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::uint64_t bytes = layout.bytes;
         // TRANSFER_SRC too: the frame's VkBuffer view is STAGING_BUFFER, an Upload source.
-        std::shared_ptr<gpu::GpuBuffer> host = co_try(context_->createBuffer(
-            {.size = bytes,
-             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-             .memory = gpu::MemoryUsage::HostReadback,
-             .name = frameName("readback", input.key)}));
-        co_try(
-            co_await context_->submit(*cpu_, [source, host, bytes](gpu::CommandRecorder& recorder) {
-                recorder.copyBuffer(*source.buffer, source.offset, *host, 0, bytes);
+        std::shared_ptr<gpu::GpuBuffer> host =
+            co_try(gpu::createBuffer(*context_, {.size = bytes,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .memory = gpu::MemoryUsage::HostReadback,
+                                                 .name = frameName("readback", input.key)}));
+        co_try(co_await gpu::submit(
+            *context_, *cpu_, [source, host, bytes](gpu::CommandRecorder& recorder) {
+                recorder.copyBuffer(
+                    *source.buffer, *host,
+                    gpu::BufferCopy{
+                        .sourceOffset = source.offset, .destinationOffset = 0, .size = bytes});
             }));
         co_try(host->invalidate());
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<StagingFrame>(
@@ -362,7 +374,7 @@ public:
         for (std::size_t c = 0; matches && c < layout.planeCount; ++c) {
             const gpu::GpuImage* image = images->planes[c].get();
             const std::uint32_t texel =
-                image != nullptr && image->format() == VK_FORMAT_R8_UINT ? 1 : 2;
+                image != nullptr && gpu::vulkanFormat(*image) == VK_FORMAT_R8_UINT ? 1 : 2;
             matches = image != nullptr && layout.planes[c].stride == image->width() * texel &&
                       layout.planes[c].rows == image->height();
         }
@@ -374,13 +386,14 @@ public:
                             input.key.index, input.key.origin, descriptor(unpacked).name));
         }
         // TRANSFER_SRC too, like ReadbackBuffer: the frame also offers a VkBuffer view.
-        std::shared_ptr<gpu::GpuBuffer> host = co_try(context_->createBuffer(
-            {.size = layout.bytes,
-             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-             .memory = gpu::MemoryUsage::HostReadback,
-             .name = frameName("readback planes", input.key)}));
-        co_try(co_await context_->submit(
-            *cpu_, [planes = *images, host, layout](gpu::CommandRecorder& recorder) {
+        std::shared_ptr<gpu::GpuBuffer> host =
+            co_try(gpu::createBuffer(*context_, {.size = layout.bytes,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .memory = gpu::MemoryUsage::HostReadback,
+                                                 .name = frameName("readback planes", input.key)}));
+        co_try(co_await gpu::submit(
+            *context_, *cpu_, [planes = *images, host, layout](gpu::CommandRecorder& recorder) {
                 // The images are in GENERAL after the unpack: copied without a transition.
                 for (std::size_t c = 0; c < planes.planeCount; ++c) {
                     recorder.copyImageToBuffer(*planes.planes[c], *host, layout.planes[c].offset);
@@ -428,19 +441,20 @@ public:
         const ColourParams resolved = resolveColour(desc).params;
         const ToDisplayPush push =
             co_try(toDisplayPush(desc.format, resolved, desc.width, desc.height));
-        std::shared_ptr<gpu::GpuImage> output = co_try(context_->createImage(
-            {.width = desc.width,
-             .height = desc.height,
-             .format = DISPLAY_IMAGE_FORMAT,
-             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-             .name = frameName("display", given.key)}));
+        std::shared_ptr<gpu::GpuImage> output = co_try(gpu::createImage(
+            *context_, {.width = desc.width,
+                        .height = desc.height,
+                        .format = DISPLAY_IMAGE_FORMAT,
+                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        .name = frameName("display", given.key)}));
         // recordToDisplay's checks fail inside the record function (nothing recorded); the result
         // is read after the submission completed. The record function holds the planes, the
         // output, the dummies and the pipeline until the GPU is done (D10).
         auto checked = std::make_shared<Result<void>>();
-        co_try(co_await context_->submit(
-            *cpu_, [pipeline = pipeline_, input, output, dummies = dummies_, push, desc,
-                    checked](gpu::CommandRecorder& recorder) {
+        co_try(co_await gpu::submit(
+            *context_, *cpu_,
+            [pipeline = pipeline_, input, output, dummies = dummies_, push, desc,
+             checked](gpu::CommandRecorder& recorder) {
                 std::array<gpu::GpuImage*, MAX_COMPONENTS> planes{};
                 const std::size_t count = std::min<std::size_t>(input.planeCount, MAX_COMPONENTS);
                 for (std::size_t c = 0; c < count; ++c) {

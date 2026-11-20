@@ -45,20 +45,20 @@ media::FormatId idOf(std::string_view name) {
 std::shared_ptr<gpu::GpuBuffer> makeBuffer(gpu::ExecutionContext& context, std::uint64_t size,
                                            VkBufferUsageFlags usage, gpu::MemoryUsage memory,
                                            std::string name) {
-    auto buffer = context.createBuffer(
-        {.size = size, .usage = usage, .memory = memory, .name = std::move(name)});
+    auto buffer = gpu::createBuffer(
+        context, {.size = size, .usage = usage, .memory = memory, .name = std::move(name)});
     REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
     return std::move(*buffer);
 }
 
 std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::uint32_t width,
                                          std::uint32_t height, VkFormat format, std::string name) {
-    auto image =
-        context.createImage({.width = width,
-                             .height = height,
-                             .format = format,
-                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                             .name = std::move(name)});
+    auto image = gpu::createImage(
+        context, {.width = width,
+                  .height = height,
+                  .format = format,
+                  .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                  .name = std::move(name)});
     REQUIRE_MESSAGE(image.has_value(), image.error().describe());
     return std::move(*image);
 }
@@ -154,7 +154,7 @@ void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& u
         gpu::GpuBuffer& readback = *unpack.readbacks[c];
         REQUIRE(readback.invalidate().has_value());
         const std::span<const std::byte> texels = readback.mapped();
-        const bool wide = image.format() == VK_FORMAT_R16_UINT;
+        const bool wide = gpu::vulkanFormat(image) == VK_FORMAT_R16_UINT;
         const std::vector<std::uint16_t>& expected = unpack.values.components[c];
         REQUIRE(expected.size() == std::size_t{image.width()} * image.height());
         for (std::uint32_t y = 0; y < image.height(); ++y) {

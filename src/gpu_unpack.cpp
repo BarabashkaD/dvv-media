@@ -117,7 +117,7 @@ Result<std::shared_ptr<gpu::ComputePipeline>> createUnpackPipeline(gpu::Executio
     constexpr VkFormatFeatureFlags2 NEEDED = VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
                                              VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
     for (const VkFormat format : {VK_FORMAT_R8_UINT, VK_FORMAT_R16_UINT}) {
-        if ((context.formatFeatures(format) & NEEDED) != NEEDED) {
+        if ((gpu::formatFeatures(context, format) & NEEDED) != NEEDED) {
             return makeError(Errc::Unsupported,
                              std::format("device {} cannot write {} storage images without a "
                                          "format (M2 R1)",
@@ -132,7 +132,7 @@ Result<std::shared_ptr<gpu::ComputePipeline>> createUnpackPipeline(gpu::Executio
                                      "UnpackPush is {}",
                                      push_size, sizeof(UnpackPush)));
     }
-    return context.createComputePipeline(shader, sizeof(UnpackPush), {.storageImages = 1});
+    return gpu::createComputePipeline(context, shader, sizeof(UnpackPush), {.storageImages = 1});
 }
 
 std::uint64_t unpackBufferBytes(std::uint64_t offset, std::uint64_t frame_bytes) noexcept {
@@ -171,7 +171,7 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
         const gpu::GpuImage* image = images[c];
         const VkFormat image_format = unpackedImageFormat(format.components[c]);
         if (image == nullptr || image->width() != push.width || image->height() != push.height ||
-            image->format() != image_format) {
+            gpu::vulkanFormat(*image) != image_format) {
             return makeError(
                 Errc::Internal,
                 std::format("unpack: the image of component {} of {} must be {}x{} {}", c,
@@ -179,10 +179,11 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
         }
     }
     for (std::size_t c = 0; c < images.size(); ++c) {
-        recorder.dispatch(pipeline, std::as_bytes(std::span(&pushes[c], 1)),
-                          std::span<gpu::GpuImage* const>(&images[c], 1),
-                          (pushes[c].width + UNPACK_GROUP - 1) / UNPACK_GROUP,
-                          (pushes[c].height + UNPACK_GROUP - 1) / UNPACK_GROUP);
+        recorder.dispatch(
+            pipeline, std::as_bytes(std::span(&pushes[c], 1)),
+            std::span<gpu::GpuImage* const>(&images[c], 1),
+            gpu::GroupCount{.x = (pushes[c].width + UNPACK_GROUP - 1) / UNPACK_GROUP,
+                            .y = (pushes[c].height + UNPACK_GROUP - 1) / UNPACK_GROUP});
     }
     return {};
 }

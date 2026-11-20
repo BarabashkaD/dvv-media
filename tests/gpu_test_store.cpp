@@ -308,11 +308,11 @@ TEST_CASE_FIXTURE(GpuTest,
         const gpu::GpuImage* image = images->planes[c].get();
         REQUIRE(image != nullptr);
         const auto [w, h] = media::componentSize(id, c, desc.width, desc.height);
-        CHECK(image->format() == VK_FORMAT_R16_UINT);
+        CHECK(gpu::vulkanFormat(*image) == VK_FORMAT_R16_UINT);
         CHECK(image->width() == w);
         CHECK(image->height() == h);
-        CHECK(image->layout() == VK_IMAGE_LAYOUT_GENERAL);
-        CHECK(image->view() != VK_NULL_HANDLE);
+        CHECK(gpu::vulkanLayout(*image) == VK_IMAGE_LAYOUT_GENERAL);
+        CHECK(gpu::vulkanView(*image) != VK_NULL_HANDLE);
     }
 }
 
@@ -350,10 +350,10 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
     const GpuStore test(*this, desc, 1);
     const auto layout = media::geometry(id, desc.width, desc.height);
     REQUIRE(layout.has_value());
-    auto buffer = context().createBuffer({.size = layout->bytes,
-                                          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                          .memory = gpu::MemoryUsage::DeviceOnly,
-                                          .name = "unpadded"});
+    auto buffer = gpu::createBuffer(context(), {.size = layout->bytes,
+                                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                .memory = gpu::MemoryUsage::DeviceOnly,
+                                                .name = "unpadded"});
     REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
     const ViewSpec view{desc.format,   desc.colour, LayoutPolicy::Tight,
                         Api::VkBuffer, test.device, 0};

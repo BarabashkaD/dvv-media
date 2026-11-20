@@ -133,10 +133,10 @@ gpu::GpuImage& displayImageOf(const ReadLease& lease) {
 // The half floats of an RGBA16F image, read back in one submission.
 std::vector<std::uint16_t> readHalves(GpuTest& test, gpu::GpuImage& image) {
     const std::uint64_t bytes = std::uint64_t{image.width()} * image.height() * 8;
-    auto buffer = test.context().createBuffer({.size = bytes,
-                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                               .memory = gpu::MemoryUsage::HostReadback,
-                                               .name = "display readback"});
+    auto buffer = gpu::createBuffer(test.context(), {.size = bytes,
+                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                     .memory = gpu::MemoryUsage::HostReadback,
+                                                     .name = "display readback"});
     REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
     const std::shared_ptr<gpu::GpuBuffer> readback = std::move(*buffer);
     const auto submitted = test.submitAndWait(
@@ -229,12 +229,12 @@ std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped
 
 std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::uint32_t width,
                                          std::uint32_t height, VkFormat format, std::string name) {
-    auto image =
-        context.createImage({.width = width,
-                             .height = height,
-                             .format = format,
-                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                             .name = std::move(name)});
+    auto image = gpu::createImage(
+        context, {.width = width,
+                  .height = height,
+                  .format = format,
+                  .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                  .name = std::move(name)});
     REQUIRE_MESSAGE(image.has_value(), image.error().describe());
     return std::move(*image);
 }
@@ -337,11 +337,11 @@ TEST_CASE_FIXTURE(GpuTest, "the display path runs every converter once and then 
         CHECK(lease->view().format == media::displayFormat());
         CHECK(lease->view().colour == media::displayColour());
         const gpu::GpuImage& image = displayImageOf(*lease);
-        CHECK(image.format() == VK_FORMAT_R16G16B16A16_SFLOAT);
+        CHECK(gpu::vulkanFormat(image) == VK_FORMAT_R16G16B16A16_SFLOAT);
         CHECK(image.width() == 33);
         CHECK(image.height() == 17);
-        CHECK(image.layout() == VK_IMAGE_LAYOUT_GENERAL);
-        CHECK(image.view() != VK_NULL_HANDLE);
+        CHECK(gpu::vulkanLayout(image) == VK_IMAGE_LAYOUT_GENERAL);
+        CHECK(gpu::vulkanView(image) != VK_NULL_HANDLE);
     }
     const auto counts = [&] {
         const media::StoreStats stats = test.store->stats();
@@ -374,7 +374,7 @@ TEST_CASE_FIXTURE(GpuTest, "the ToDisplay pipeline binds five storage images and
         REQUIRE(image != nullptr);
         CHECK(image->width() == 1);
         CHECK(image->height() == 1);
-        CHECK(image->format() == VK_FORMAT_R16_UINT);
+        CHECK(gpu::vulkanFormat(*image) == VK_FORMAT_R16_UINT);
         for (std::size_t j = 0; j < i; ++j) {
             CHECK(image != dummies->images[j]);
         }
