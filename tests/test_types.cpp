@@ -24,6 +24,8 @@
 namespace media = dvv::media;
 namespace fs = std::filesystem;
 
+static_assert(media::FALLBACK_FPS == media::Rational{25, 1});
+
 TEST_CASE("frame keys compare and hash by value") {
     const media::FrameKey key{.origin = 1, .index = 2};
     CHECK(key == media::FrameKey{.origin = 1, .index = 2});

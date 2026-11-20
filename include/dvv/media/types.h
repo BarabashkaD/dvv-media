@@ -20,7 +20,11 @@ struct Rational {
     bool operator==(const Rational&) const = default;  // plain member equality, no normalisation
 };
 
-using FormatId = std::uint32_t;  // index into the process-wide format table (catalogue first)
+// The frame rate a source reports when its input states none (a raw file without fps, a Y4M
+// header without F, a container without a rate).
+inline constexpr Rational FALLBACK_FPS{25, 1};
+
+using FormatId =std::uint32_t;  // index into the process-wide format table (catalogue first)
 using ColourId = std::uint32_t;  // index into the process-wide colour table (0 = all Unspecified)
 using OriginId = std::uint64_t;  // 0 = none
 

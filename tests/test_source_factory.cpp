@@ -592,6 +592,12 @@ static_assert(std::is_same_v<decltype(std::declval<media::SourceFactory&>().open
                                  std::declval<const media::SourceRequest&>())),
                              dvv::Task<dvv::Result<media::SourceFactory::OpenResult>>>);
 
+static_assert(media::DEFAULT_FILE_READS == dvv::platform::FileReadMode::Auto);
+
+TEST_CASE("a SourceRequest reads files with DEFAULT_FILE_READS") {
+    CHECK(media::SourceRequest{}.fileReads == media::DEFAULT_FILE_READS);
+}
+
 // Kept until 1.0.0: the aggregate forms of 0.1.1 still compile (-Werror).
 TEST_CASE("OpenContext and SourceRequest keep their 0.1.1 initialisers") {
     const auto io = dvv::ExecutorFactory::makeThreadPool(1);
@@ -605,7 +611,10 @@ TEST_CASE("OpenContext and SourceRequest keep their 0.1.1 initialisers") {
     REQUIRE(uri.has_value());
     const media::SourceRequest four{uri.value(), std::nullopt, dvv::platform::FileReadMode::Auto,
                                     std::nullopt};
-    // SourceRequest{uri} and {.uri = uri, .fileReads = ...} are not listed: they skip `hint`, which
-    // has no default initialiser, so they already fail under -Werror in 0.1.1.
+    const media::SourceRequest uri_only{uri.value()};
+    const media::SourceRequest reads_only{.uri = uri.value(),
+                                          .fileReads = dvv::platform::FileReadMode::Auto};
+    CHECK_FALSE(uri_only.hint.has_value());
+    CHECK_FALSE(reads_only.hint.has_value());
     CHECK(four.uri.path == uri.value().path);
 }

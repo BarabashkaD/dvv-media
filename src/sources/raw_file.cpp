@@ -51,7 +51,6 @@ constexpr std::array<std::string_view, 1> SCHEMES{"file"};
 constexpr std::array<std::string_view, 6> OWN_PARAMETERS{"fmt", "size", "w", "h", "fps", "clip"};
 constexpr auto ALLOWED = detail::withColourParameters(OWN_PARAMETERS);
 
-constexpr Rational DEFAULT_FPS{25, 1};
 // The format assumed when only the size is known.
 constexpr std::string_view GUESS_FORMAT = "yuv420p";
 // The smallest host frame alignment (a cache line); unbuffered reads need the reader's.
@@ -311,7 +310,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     }
     const auto [width, height] = size;
 
-    Rational fps = DEFAULT_FPS;
+    Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
         DVV_TRY(fps, detail::parseFps(*text));
     } else if (hint.fps) {

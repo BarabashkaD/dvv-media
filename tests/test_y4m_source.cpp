@@ -204,7 +204,7 @@ TEST_CASE("y4m: every C mapping") {
     const auto missing = parse("YUV4MPEG2 W33 H17\n");
     REQUIRE_MESSAGE(missing.has_value(), missing.error().describe());
     CHECK(missing->format == idOf("yuv420p"));
-    CHECK(missing->fps == media::Rational{25, 1});
+    CHECK(missing->fps == media::FALLBACK_FPS);
     CHECK(missing->width == 33);
     CHECK(missing->height == 17);
 
@@ -478,4 +478,12 @@ TEST_CASE("y4m: a preset leaves the range of a gray stream alone (M4-D5-RGBRANGE
     CHECK(range_of(limited_path, "?colour=bt709&range=full") == media::ColourRange::Full);
     CHECK(range_of(untagged_path, "?colour=bt601-pal&range=limited") ==
           media::ColourRange::Limited);
+}
+
+TEST_CASE("a header without F reports FALLBACK_FPS") {
+    const auto header = parse("YUV4MPEG2 W33 H17\n");
+    CHECK(header.has_value());
+    if (header) {
+        CHECK(header->fps == media::FALLBACK_FPS);
+    }
 }

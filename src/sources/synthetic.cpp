@@ -45,7 +45,6 @@ constexpr std::array<std::string_view, 7> OWN_PARAMETERS{"fmt", "size",   "w",  
                                                          "fps", "frames", "seed"};
 constexpr auto ALLOWED = detail::withColourParameters(OWN_PARAMETERS);
 
-constexpr Rational DEFAULT_FPS{25, 1};
 constexpr std::uint64_t DEFAULT_FRAMES = 10;
 constexpr std::uint64_t DEFAULT_SEED = 1;
 constexpr auto MAX_FRAMES = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
@@ -97,7 +96,7 @@ Result<Parsed> parse(const Uri& uri) {
     const auto [width, height] = *size;
     DVV_TRY_VOID(geometry(format, width, height).transform([](const FrameGeometry&) {}));
 
-    Rational fps = DEFAULT_FPS;
+    Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
         DVV_TRY(fps, detail::parseFps(*text));
     }

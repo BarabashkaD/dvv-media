@@ -176,7 +176,7 @@ TEST_CASE("raw: query size and format") {
     CHECK(info.frameCount == 3);
     CHECK(info.desc ==
           media::FrameDesc{.format = idOf(FORMAT), .colour = 0, .width = WIDTH, .height = HEIGHT});
-    CHECK(info.fps == media::Rational{25, 1});
+    CHECK(info.fps == media::FALLBACK_FPS);
     CHECK(info.access == media::SourceAccess::RandomCheap);
     CHECK(info.fixed == media::FixedFields{});
     CHECK(info.warnings.empty());

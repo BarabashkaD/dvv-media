@@ -50,11 +50,14 @@ struct Sidecar {
     std::string error;  // why it could not be read (e.g. "'<file>' is too large"); empty if read
 };
 
+// How file sources read frames unless the application says otherwise.
+inline constexpr platform::FileReadMode DEFAULT_FILE_READS = platform::FileReadMode::Auto;
+
 struct SourceRequest {
     Uri uri;
-    std::optional<FormatHint> hint;
+    std::optional<FormatHint> hint{};
     // How file sources (raw, Y4M) read frames (M3.1 U-IO2; the application's config file).
-    platform::FileReadMode fileReads = platform::FileReadMode::Auto;
+    platform::FileReadMode fileReads = DEFAULT_FILE_READS;
     // Set by SourceFactory::open() for a file: URI without clip= when <file>.json exists; callers
     // leave it empty (it is replaced). Only the raw provider uses it.
     std::optional<Sidecar> sidecar{};
