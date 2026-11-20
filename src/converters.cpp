@@ -28,7 +28,7 @@
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/file_reader.h"
+#include "dvv/platform/aligned_buffer.h"
 #include "gpu_unpack.h"
 #include "store_state.h"
 #include "to_display.h"

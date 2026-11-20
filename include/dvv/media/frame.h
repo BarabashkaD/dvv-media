@@ -14,7 +14,7 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/file_reader.h"
+#include "dvv/platform/aligned_buffer.h"
 
 namespace dvv::gpu {
 class GpuBuffer;

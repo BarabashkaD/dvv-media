@@ -22,7 +22,7 @@
 #include "dvv/media/frame_store.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/file_reader.h"
+#include "dvv/platform/aligned_buffer.h"
 
 namespace dvv::media::detail {
 

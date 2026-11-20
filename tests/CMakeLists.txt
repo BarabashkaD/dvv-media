@@ -3,6 +3,11 @@ find_package(doctest 2.5 REQUIRED CONFIG)
 add_executable(dvv_media_tests
     main.cpp
     source_harness.cpp
+    neutral_headers/display_h.cpp
+    neutral_headers/frame_store_h.cpp
+    neutral_headers/pixel_format_h.cpp
+    neutral_headers/source_h.cpp
+    neutral_headers/types_h.cpp
     store_fakes.cpp
     test_clip_json.cpp
     test_colour_preset.cpp
@@ -13,6 +18,7 @@ add_executable(dvv_media_tests
     test_frame_store.cpp
     test_gpu_unpack.cpp
     test_layout_goldens.cpp
+    test_neutral_headers.cpp
     test_original_read.cpp
     test_pixel_format.cpp
     test_planner.cpp
