@@ -383,7 +383,7 @@ TEST_CASE_FIXTURE(GpuTest,
         test.take(0, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
     stats = test.store->stats();
     CHECK(runsOf(stats, "GpuUnpack") == 1);
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     CHECK(media::vulkan::image(planes, format.componentCount) == nullptr);
     for (std::size_t c = 0; c < format.componentCount; ++c) {
         const gpu::GpuImage* image = media::vulkan::image(planes, c);
@@ -401,7 +401,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffe
     const FormatId id = idOf("yuv420p10le");
     const FrameDesc desc{.format = id, .colour = 0, .width = 34, .height = 17};
     const GpuStore test(*this, desc, 3);
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     const std::size_t plane_count = format.componentCount;
     REQUIRE(plane_count > 0);
 

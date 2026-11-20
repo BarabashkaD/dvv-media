@@ -52,6 +52,7 @@ struct PlaneDesc {
     std::array<SampleSlot, MAX_SLOTS> slots{};  // every sample of one group; other bits are padding
     bool operator==(const PlaneDesc&) const = default;
 };
+// Deprecated name (removed in 1.0.0): use PixelFormatDesc.
 struct PixelFormatDescriptor {
     std::string name;  // FFmpeg pix_fmt name ("v210": codec name)
     ColourModel model = ColourModel::Gray;
@@ -63,15 +64,21 @@ struct PixelFormatDescriptor {
     bool operator==(const PixelFormatDescriptor&) const = default;
 };
 
-// Checks a descriptor, including the GPU limits. Errc::Format with the reason (rules in the plan).
-[[nodiscard]] Result<void> validate(const PixelFormatDescriptor& descriptor);
+using PixelFormatDesc = PixelFormatDescriptor;  // the name to use; 1.0.0 flips them
 
-// Process-wide table: entries are heap-allocated and never moved or removed, so descriptor()
+// Checks a description, including the GPU limits. Errc::Format with the reason (rules in the plan).
+[[nodiscard]] Result<void> validate(const PixelFormatDesc& desc);
+
+// Process-wide table: entries are heap-allocated and never moved or removed, so formatDesc()
 // returns stable references while other threads intern formats. The catalogue (D3) is interned at
 // first use, in the order of D3, as ids 0..36.
 [[nodiscard]] std::span<const FormatId> catalogue();
-// Unknown id: a reference to a static empty descriptor (name "", no components, no planes).
-[[nodiscard]] const PixelFormatDescriptor& descriptor(FormatId format) noexcept;
+// Unknown id: a reference to a static empty description (name "", no components, no planes).
+[[nodiscard]] const PixelFormatDesc& formatDesc(FormatId format) noexcept;
+// Deprecated (removed in 1.0.0): formatDesc().
+[[nodiscard]] inline const PixelFormatDesc& descriptor(FormatId format) noexcept {
+    return formatDesc(format);
+}
 // Exact, case-sensitive name match over every interned format (catalogue, unpacked, custom).
 [[nodiscard]] std::optional<FormatId> findFormat(std::string_view name) noexcept;
 // FFmpeg's deprecated full-range names (M4 design D4): what a decoder output named yuvj420p,

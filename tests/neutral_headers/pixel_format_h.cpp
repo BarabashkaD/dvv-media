@@ -5,4 +5,4 @@
 #error "pixel_format.h includes Vulkan"
 #endif
 
-static_assert(sizeof(dvv::media::PixelFormatDescriptor) != 0);
+static_assert(sizeof(dvv::media::PixelFormatDesc) != 0);

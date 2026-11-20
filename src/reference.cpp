@@ -39,7 +39,7 @@ void writeWord(std::span<std::byte> bytes, std::size_t at, const PlaneDesc& plan
 
 // The component grid widths (componentSize) of a format; 0 beyond componentCount.
 [[nodiscard]] std::array<std::uint32_t, MAX_COMPONENTS> gridWidths(FormatId format,
-                                                                   const PixelFormatDescriptor& d,
+                                                                   const PixelFormatDesc& d,
                                                                    std::uint32_t width,
                                                                    std::uint32_t height) {
     std::array<std::uint32_t, MAX_COMPONENTS> widths{};
@@ -54,7 +54,7 @@ void writeWord(std::span<std::byte> bytes, std::size_t at, const PlaneDesc& plan
 // padding bits and row padding are skipped. A plane's rows are its components' rows (validate()
 // ties the plane's log2SubY to them).
 template <typename Visit>
-void forEachSample(const PixelFormatDescriptor& d, const FrameGeometry& frame, std::uint32_t width,
+void forEachSample(const PixelFormatDesc& d, const FrameGeometry& frame, std::uint32_t width,
                    const std::array<std::uint32_t, MAX_COMPONENTS>& widths, const Visit& visit) {
     for (std::size_t p = 0; p < d.planeCount; ++p) {
         const PlaneDesc& plane = d.planes[p];
@@ -91,7 +91,7 @@ Result<std::vector<std::byte>> pack(const CodeValues& values) {
     if (!frame) {
         return std::unexpected(std::move(frame.error()));
     }
-    const PixelFormatDescriptor& d = descriptor(values.format);
+    const PixelFormatDesc& d = formatDesc(values.format);
     const std::array<std::uint32_t, MAX_COMPONENTS> widths =
         gridWidths(values.format, d, values.width, values.height);
     for (std::size_t c = 0; c < MAX_COMPONENTS; ++c) {
@@ -141,7 +141,7 @@ Result<CodeValues> unpack(FormatId format, std::uint32_t width, std::uint32_t he
         return makeError(Errc::Internal, std::format("original has {} bytes, expected at least {}",
                                                      original.size(), frame->bytes));
     }
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     const std::array<std::uint32_t, MAX_COMPONENTS> widths = gridWidths(format, d, width, height);
     CodeValues result{.format = format, .width = width, .height = height};
     for (std::size_t c = 0; c < d.componentCount; ++c) {

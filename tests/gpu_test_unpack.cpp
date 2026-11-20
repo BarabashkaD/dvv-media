@@ -93,7 +93,7 @@ struct UnpackCase {
 // The frame sizes of the bit-exactness test; a width multiple (v210: 2) rounds the widths up and
 // drops 1x1.
 std::vector<std::pair<std::uint32_t, std::uint32_t>> frameSizes(
-    const media::PixelFormatDescriptor& format) {
+    const media::PixelFormatDesc& format) {
     static constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 5> SIZES{
         {{1, 1}, {2, 2}, {33, 17}, {49, 3}, {64, 64}}};
     const std::uint32_t multiple = format.widthMultiple;
@@ -109,7 +109,7 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> frameSizes(
 
 UnpackCase prepareCase(gpu::ExecutionContext& context, media::FormatId id, std::uint32_t width,
                        std::uint32_t height, std::uint64_t seed, std::uint64_t offset) {
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     UnpackCase unpack{.width = width, .height = height, .seed = seed, .offset = offset};
     auto values = detail::generate(detail::Pattern::Noise, id, width, height, seed, 0);
     REQUIRE_MESSAGE(values.has_value(), values.error().describe());
@@ -151,7 +151,7 @@ UnpackCase prepareCase(gpu::ExecutionContext& context, media::FormatId id, std::
 }
 
 // Compares the read-back images with the code values; FAIL_CHECK on the first mismatch.
-void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& unpack) {
+void compareCase(const media::PixelFormatDesc& format, const UnpackCase& unpack) {
     for (std::size_t c = 0; c < unpack.images.size(); ++c) {
         const gpu::GpuImage& image = *unpack.images[c];
         gpu::GpuBuffer& readback = *unpack.readbacks[c];
@@ -183,7 +183,7 @@ void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& u
 
 // Unpacks noise frames of every size of frameSizes() on the GPU and compares them bit for bit.
 void checkFormat(GpuTest& test, media::FormatId id) {
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     const auto pipeline = unpackPipeline(test.context());
     // Seed 1 at offset 0; seed 2 at offset 260 (4-aligned, not 16-aligned).
     std::vector<UnpackCase> cases;
@@ -240,16 +240,16 @@ media::PlaneDesc plane(std::uint8_t group_pixels, std::uint8_t group_bytes, std:
 
 // Custom formats that use the shader paths no catalogue format reaches: 4-byte big-endian words
 // and 4:1:x chroma (log2SubX 2).
-std::vector<media::PixelFormatDescriptor> customFormats() {
+std::vector<media::PixelFormatDesc> customFormats() {
     using media::ByteOrder;
     using media::ComponentKind;
-    std::vector<media::PixelFormatDescriptor> formats;
+    std::vector<media::PixelFormatDesc> formats;
 
     // 10-bit RGB in one big-endian 32-bit word per pixel (R in bits 20..29, B in 0..9).
-    media::PixelFormatDescriptor rgb{.name = "test-rgb30-be32",
-                                     .model = media::ColourModel::Rgb,
-                                     .componentCount = 3,
-                                     .planeCount = 1};
+    media::PixelFormatDesc rgb{.name = "test-rgb30-be32",
+                               .model = media::ColourModel::Rgb,
+                               .componentCount = 3,
+                               .planeCount = 1};
     rgb.components = {component(ComponentKind::R, 10), component(ComponentKind::G, 10),
                       component(ComponentKind::B, 10)};
     rgb.planes[0] =
@@ -257,10 +257,10 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
     formats.push_back(rgb);
 
     // Packed 4:1:1 (FFmpeg uyyvyy411 order): U Y0 Y1 V Y2 Y3, 6 bytes per 4 pixels.
-    media::PixelFormatDescriptor packed{.name = "test-uyyvyy411",
-                                        .model = media::ColourModel::Yuv,
-                                        .componentCount = 3,
-                                        .planeCount = 1};
+    media::PixelFormatDesc packed{.name = "test-uyyvyy411",
+                                  .model = media::ColourModel::Yuv,
+                                  .componentCount = 3,
+                                  .planeCount = 1};
     packed.components = {component(ComponentKind::Y, 8), component(ComponentKind::U, 8, 2),
                          component(ComponentKind::V, 8, 2)};
     packed.planes[0] = plane(4, 6, 1, ByteOrder::Little, 0,
@@ -269,10 +269,10 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
     formats.push_back(packed);
 
     // Planar 4:1:0, 12-bit samples, two per big-endian 32-bit word (bits 16..27 and 0..11).
-    media::PixelFormatDescriptor planar{.name = "test-yuv410p12-be32",
-                                        .model = media::ColourModel::Yuv,
-                                        .componentCount = 3,
-                                        .planeCount = 3};
+    media::PixelFormatDesc planar{.name = "test-yuv410p12-be32",
+                                  .model = media::ColourModel::Yuv,
+                                  .componentCount = 3,
+                                  .planeCount = 3};
     planar.components = {component(ComponentKind::Y, 12), component(ComponentKind::U, 12, 2, 2),
                          component(ComponentKind::V, 12, 2, 2)};
     planar.planes[0] = plane(2, 4, 4, ByteOrder::Big, 0, {slot(0, 0, 0, 16), slot(0, 1, 0, 0)});
@@ -286,14 +286,14 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
 
 TEST_CASE_FIXTURE(GpuTest, "GPU unpack is bit-exact for every catalogue format") {
     for (const media::FormatId id : media::catalogue()) {
-        SUBCASE(media::descriptor(id).name.c_str()) {
+        SUBCASE(media::formatDesc(id).name.c_str()) {
             checkFormat(*this, id);
         }
     }
 }
 
 TEST_CASE_FIXTURE(GpuTest, "GPU unpack is bit-exact for custom formats") {
-    for (const media::PixelFormatDescriptor& format : customFormats()) {
+    for (const media::PixelFormatDesc& format : customFormats()) {
         SUBCASE(format.name.c_str()) {
             const dvv::Result<void> valid = media::validate(format);
             REQUIRE_MESSAGE(valid.has_value(), valid.error().describe());

@@ -236,7 +236,7 @@ TEST_CASE("raw: custom format from JSON") {
     SourceHarness harness;
     const auto source = harness.open(dvv::pathText(clip) + "?fmt=@" +
                                      dvv::percentEncode(dvv::pathText(json)) + "&size=33x17");
-    CHECK(media::descriptor(source->info().desc.format).name == "my10le");
+    CHECK(media::formatDesc(source->info().desc.format).name == "my10le");
     // A query value keeps '/', ':', '@' and '\'; the path keeps '/', ':' and '\'.
     CHECK(source->info().resolvedUri ==
           "file:" + dvv::percentEncode(dvv::pathText(clip)) + "?fmt=@" +
@@ -737,7 +737,7 @@ TEST_CASE("raw: a sidecar's relative @ format is read from the sidecar's folder"
 
     SourceHarness harness;
     const auto source = harness.open(dvv::pathText(path));
-    CHECK(media::descriptor(source->info().desc.format).name == "side10le");
+    CHECK(media::formatDesc(source->info().desc.format).name == "side10le");
     CHECK(source->info().desc.width == WIDTH);
     CHECK(source->info().warnings.empty());
     CHECK(frameBytes(harness, source, 2) == packedFrame(FORMAT, WIDTH, HEIGHT, SEED, 2));

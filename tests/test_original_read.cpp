@@ -97,7 +97,7 @@ const HostPlanesB& planesOf(const OriginalRead& read) {
 
 TEST_CASE("original read: view helpers") {
     for (const FrameDesc& base : descs()) {
-        SUBCASE(dvv::media::descriptor(base.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(base.format).name.c_str()) {
             FrameDesc desc = base;
             desc.colour = dvv::media::internColour({.matrix = dvv::media::ColourMatrix::Bt709,
                                                     .range = dvv::media::ColourRange::Limited,
@@ -119,7 +119,7 @@ TEST_CASE("original read: view helpers") {
 
 TEST_CASE("original read: a host-only store unpacks on the CPU") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto read = test.read(1);
             REQUIRE_MESSAGE(read.has_value(), read.error().describe());
@@ -144,7 +144,7 @@ TEST_CASE("original read: a host-only store unpacks on the CPU") {
 
 TEST_CASE("original read: requireExact returns the original bytes") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto read = test.read(1, true);
             REQUIRE_MESSAGE(read.has_value(), read.error().describe());
@@ -160,7 +160,7 @@ TEST_CASE("original read: requireExact returns the original bytes") {
 
 TEST_CASE("original read: a second read is a hit") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const auto first = test.read(1);
             REQUIRE_MESSAGE(first.has_value(), first.error().describe());
@@ -177,7 +177,7 @@ TEST_CASE("original read: a second read is a hit") {
 
 TEST_CASE("original read: a host-only store has no staging domain") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             CHECK(test.store->stagingDomain() == std::nullopt);
             CHECK(test.store->deviceDomain() == std::nullopt);
@@ -194,7 +194,7 @@ TEST_CASE("original read: a host-only store has no staging domain") {
 
 TEST_CASE("original read: a detached origin is Internal") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             test.store->detach(test.origin);
             const auto read = test.read(1);
@@ -207,7 +207,7 @@ TEST_CASE("original read: a detached origin is Internal") {
 
 TEST_CASE("original read: the request form names the fidelity") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const Domain host = test.store->hostDomain();
             const auto lossless = syncWait(test.store->acquireOriginal(
@@ -232,7 +232,7 @@ TEST_CASE("original read: the request form names the fidelity") {
 
 TEST_CASE("original read: the old form forwards") {
     for (const FrameDesc& desc : descs()) {
-        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+        SUBCASE(dvv::media::formatDesc(desc.format).name.c_str()) {
             HostStoreCase test(desc);
             const Domain host = test.store->hostDomain();
             const auto lossless = test.read(1);

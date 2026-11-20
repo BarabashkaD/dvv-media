@@ -164,7 +164,7 @@ float halfStep(float value) {
 std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped,
                          const FrameDesc& desc, const std::vector<std::uint16_t>& halves,
                          std::optional<std::string>& first) {
-    const media::PixelFormatDescriptor& d = media::descriptor(format);
+    const media::PixelFormatDesc& d = media::formatDesc(format);
     const auto values =
         detail::generate(detail::Pattern::Noise, format, desc.width, desc.height, SEED, 0);
     REQUIRE_MESSAGE(values.has_value(), values.error().describe());
@@ -246,7 +246,7 @@ std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::ui
 
 TEST_CASE_FIXTURE(GpuTest, "ToDisplay matches the CPU reference for every format and colour set") {
     for (const FormatId format : media::catalogue()) {
-        const media::PixelFormatDescriptor& d = media::descriptor(format);
+        const media::PixelFormatDesc& d = media::formatDesc(format);
         SUBCASE(d.name.c_str()) {
             const DisplayStore test(*this);
             const std::uint32_t multiple = std::max<std::uint32_t>(d.widthMultiple, 1);

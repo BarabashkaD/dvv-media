@@ -52,7 +52,7 @@ VkFormat unpackedImageFormat(const ComponentDesc& component) noexcept {
 
 Result<UnpackPush> unpackPush(FormatId format, std::uint32_t width, std::uint32_t height,
                               std::size_t component, std::uint64_t base) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     // The plane that holds the component's samples, and those samples sorted by index.
     std::optional<std::size_t> plane;
     std::array<SampleSlot, MAX_SLOTS> slots{};
@@ -143,7 +143,7 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
                           const gpu::GpuBuffer& buffer, std::uint64_t offset, const FrameDesc& desc,
                           std::span<gpu::GpuImage* const> images) {
     DVV_TRY(const FrameGeometry frame, geometry(desc.format, desc.width, desc.height));
-    const PixelFormatDescriptor& format = descriptor(desc.format);
+    const PixelFormatDesc& format = formatDesc(desc.format);
     const std::uint64_t base = buffer.deviceAddress() + offset;
     if (base % 4 != 0) {
         return makeError(Errc::Internal,

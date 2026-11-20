@@ -113,13 +113,13 @@ Result<Parsed> parse(const Uri& uri) {
         DVV_TRY(parsed.seed, detail::parseUnsigned("seed", *text));
     }
     DVV_TRY(const ColourSpec colour_spec, colourSpecFromQuery(uri));
-    const ColourParams colour = merged(colour_spec, descriptor(format).model);
+    const ColourParams colour = merged(colour_spec, formatDesc(format).model);
 
     Uri resolved;
     resolved.scheme = "synthetic";
     resolved.path = uri.path;
     resolved.params = {
-        {"fmt", descriptor(format).name},
+        {"fmt", formatDesc(format).name},
         {"size", std::format("{}x{}", width, height)},
         {"fps", formatFps(fps)},
         {"frames", std::format("{}", frames)},

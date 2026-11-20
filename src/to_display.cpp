@@ -50,7 +50,7 @@ std::uint32_t transferCode(TransferFn transfer) noexcept {
 
 Result<ToDisplayPush> toDisplayPush(FormatId format, const ColourParams& resolved,
                                     std::uint32_t width, std::uint32_t height) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     if (d.componentCount == 0 || d.componentCount > MAX_COMPONENTS) {
         return makeError(Errc::Internal, std::format("ToDisplay: unknown format {}", format));
     }
@@ -127,7 +127,7 @@ Result<void> recordToDisplay(gpu::CommandRecorder& recorder, const gpu::ComputeP
                              const ToDisplayPush& push, FormatId format,
                              std::span<gpu::GpuImage* const> planes, gpu::GpuImage& output,
                              const ToDisplayDummies& dummies) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     if (d.componentCount == 0 || planes.size() != d.componentCount) {
         return makeError(Errc::Internal,
                          std::format("ToDisplay: {} has {} components, {} planes given", d.name,

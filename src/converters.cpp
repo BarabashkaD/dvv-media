@@ -301,7 +301,7 @@ public:
         const FrameDesc desc = given.desc;
         const FormatId unpacked = unpackedFormat(desc.format);
         const VkBufferB input = co_try(bufferOf(given, name()));
-        const PixelFormatDescriptor& d = descriptor(desc.format);
+        const PixelFormatDesc& d = formatDesc(desc.format);
         std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
         for (std::size_t c = 0; c < d.componentCount; ++c) {
             const auto [w, h] = componentSize(desc.format, c, desc.width, desc.height);
@@ -431,7 +431,7 @@ public:
                 Errc::Internal,
                 std::format("Readback: the planes of frame {} of origin {} do not "
                             "match {}",
-                            input.key.index, input.key.origin, descriptor(unpacked).name));
+                            input.key.index, input.key.origin, formatDesc(unpacked).name));
         }
         // TRANSFER_SRC too, like ReadbackBuffer: the frame also offers a VkBuffer view.
         std::shared_ptr<gpu::GpuBuffer> host =

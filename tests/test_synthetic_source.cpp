@@ -81,7 +81,7 @@ TEST_CASE("synthetic: deterministic") {
 TEST_CASE("synthetic: every catalogue format produces in-range code values") {
     SourceHarness harness;
     for (const media::FormatId format : media::catalogue()) {
-        const media::PixelFormatDescriptor& descriptor = media::descriptor(format);
+        const media::PixelFormatDesc& descriptor = media::formatDesc(format);
         INFO(descriptor.name);
         const auto source = harness.open("synthetic:gradient?fmt=" + descriptor.name + "&size=6x2");
         CHECK(source->info().desc.format == format);

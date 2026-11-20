@@ -289,7 +289,7 @@ Result<Opened> openFile(const SourceRequest& request) {
         } else {
             DVV_TRY(format, parseFormat(GUESS_FORMAT));
         }
-        fmt_param = descriptor(format).name;
+        fmt_param = formatDesc(format).name;
     }
 
     DVV_TRY(const std::optional<Size> query_size, detail::sizeFromQuery(uri));
@@ -324,7 +324,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     // The colour (D5R §1.3): the query, then the clip description, then the file name.
     DVV_TRY(const ColourSpec colour_spec, colourSpecFromQuery(uri));
     const ColourParams colour = merged(withClipColour(colour_spec, clip ? &*clip : nullptr, name),
-                                       descriptor(format).model);
+                                       formatDesc(format).model);
     DVV_TRY(const FrameGeometry frame, geometry(format, width, height));
 
     DVV_TRY(platform::FileReader reader,

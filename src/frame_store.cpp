@@ -79,7 +79,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 // "gray@planes (HostPlanes, Host, Any)" for messages.
 [[nodiscard]] std::string viewText(const ViewSpec& view) {
     std::string text =
-        std::format("{} ({}, {}, {}", descriptor(view.format).name, apiName(view.api),
+        std::format("{} ({}, {}, {}", formatDesc(view.format).name, apiName(view.api),
                     kindName(view.domain.kind), layoutName(view.layout));
     if (view.downscaleLog2 != 0) {
         text += std::format(", downscale log2 {}", static_cast<unsigned>(view.downscaleLog2));
@@ -754,7 +754,7 @@ Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const Vi
 Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record& record,
                                             const ViewSpec& want) {
     detail::StoreState& s = *state_;
-    const std::string_view original = descriptor(record.desc.format).name;
+    const std::string_view original = formatDesc(record.desc.format).name;
     const std::optional<detail::StateKey> target = stateOf(record, s.tiers, want);
     if (!target) {
         return makeError(Errc::Unsupported,

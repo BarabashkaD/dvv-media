@@ -215,7 +215,7 @@ struct Opened {
 
 // The query must agree with the header: fmt, size and fps are checks only.
 Result<void> checkQuery(const Uri& uri, const detail::Y4mHeader& header) {
-    const std::string_view name = descriptor(header.format).name;
+    const std::string_view name = formatDesc(header.format).name;
     if (const auto fmt = uri.param("fmt"); fmt && *fmt != name) {
         return makeError(Errc::Format, std::format("Y4M header says {}", name));
     }
@@ -276,7 +276,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     DVV_TRY(const detail::Y4mHeader header,
             detail::parseY4mHeader(std::span<const std::byte>(buffer.get(), head_bytes)));
     DVV_TRY_VOID(checkQuery(uri, header));
-    const ColourParams query_colour = merged(query_spec, descriptor(header.format).model);
+    const ColourParams query_colour = merged(query_spec, formatDesc(header.format).model);
 
     DVV_TRY(const FrameGeometry frame, geometry(header.format, header.width, header.height));
     const std::uint64_t frame_bytes = frame.bytes;
@@ -287,7 +287,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     resolved.scheme = "file";
     resolved.path = uri.path;
     resolved.params = {
-        {"fmt", std::string(descriptor(header.format).name)},
+        {"fmt", std::string(formatDesc(header.format).name)},
         {"size", std::format("{}x{}", header.width, header.height)},
         {"fps", formatFps(header.fps)},
     };

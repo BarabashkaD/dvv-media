@@ -70,8 +70,7 @@ void checkRejects(const json::Value& value, std::string_view text) {
 }
 
 // A descriptor with another name, for comparisons that ignore the name.
-media::PixelFormatDescriptor renamed(media::PixelFormatDescriptor descriptor,
-                                     std::string_view name) {
+media::PixelFormatDesc renamed(media::PixelFormatDesc descriptor, std::string_view name) {
     descriptor.name = name;
     return descriptor;
 }
@@ -107,13 +106,13 @@ TEST_CASE("formatToJson writes every key") {
 
 TEST_CASE("every catalogue entry round-trips") {
     for (const media::FormatId id : media::catalogue()) {
-        const media::PixelFormatDescriptor& original = media::descriptor(id);
+        const media::PixelFormatDesc& original = media::formatDesc(id);
         CAPTURE(original.name);
         json::Value value = media::formatToJson(id);
         value["name"] = original.name + "_copy";
         const media::FormatId copy = loadOk(value);
         CHECK(copy != id);
-        CHECK(renamed(media::descriptor(copy), original.name) == original);
+        CHECK(renamed(media::formatDesc(copy), original.name) == original);
         CHECK(media::formatToJson(copy) == value);
     }
 }
@@ -130,7 +129,7 @@ TEST_CASE("defaults") {
     }
     value["planes"][0].erase("log2SubY");
     const media::FormatId id = loadOk(value);
-    CHECK(renamed(media::descriptor(id), "p010le") == media::descriptor(idOf("p010le")));
+    CHECK(renamed(media::formatDesc(id), "p010le") == media::formatDesc(idOf("p010le")));
 }
 
 TEST_CASE("interning is idempotent") {
@@ -272,7 +271,7 @@ TEST_CASE("concurrent interning") {
     const json::Value gray10 = media::formatToJson(idOf("gray10le"));
     std::vector<std::string> catalogue_names;
     for (const media::FormatId id : media::catalogue()) {
-        catalogue_names.push_back(media::descriptor(id).name);
+        catalogue_names.push_back(media::formatDesc(id).name);
     }
 
     std::vector<std::vector<std::optional<media::FormatId>>> results(
@@ -299,7 +298,7 @@ TEST_CASE("concurrent interning") {
             start.arrive_and_wait();
             for (int i = 0; i < READS; ++i) {
                 for (const media::FormatId id : media::catalogue()) {
-                    if (media::descriptor(id).name != catalogue_names[id]) {
+                    if (media::formatDesc(id).name != catalogue_names[id]) {
                         names_right = false;
                     }
                 }
@@ -318,7 +317,7 @@ TEST_CASE("concurrent interning") {
             REQUIRE(results[t][k].has_value());
             const media::FormatId id = results[t][k].value_or(0);
             CHECK(media::findFormat(name) == id);
-            CHECK(media::descriptor(id).name == name);
+            CHECK(media::formatDesc(id).name == name);
             ids.insert(id);
         }
     }

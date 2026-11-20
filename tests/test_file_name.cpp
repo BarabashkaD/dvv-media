@@ -30,7 +30,7 @@ void checkParsed(std::string_view path, const Expected& expected) {
     CHECK(info.height == expected.height);
     CHECK(info.format.has_value() == expected.format.has_value());
     if (info.format && expected.format) {
-        CHECK(media::descriptor(*info.format).name == *expected.format);
+        CHECK(media::formatDesc(*info.format).name == *expected.format);
     }
     CHECK(info.fps == expected.fps);
     CHECK(info.colour == expected.colour);

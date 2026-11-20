@@ -21,7 +21,7 @@ namespace {
 constexpr std::size_t CATALOGUE_SIZE = 37;
 
 std::string unpackedName(media::FormatId format) {
-    return media::descriptor(format).name + "@planes";
+    return media::formatDesc(format).name + "@planes";
 }
 
 }  // namespace
@@ -74,5 +74,5 @@ TEST_CASE("concurrent first creation of unpacked formats") {
     CHECK(ids.size() == CATALOGUE_SIZE);
     CHECK(*ids.begin() == CATALOGUE_SIZE);
     CHECK(*ids.rbegin() == (2 * CATALOGUE_SIZE) - 1);
-    CHECK(media::descriptor(static_cast<media::FormatId>(2 * CATALOGUE_SIZE)).name.empty());
+    CHECK(media::formatDesc(static_cast<media::FormatId>(2 * CATALOGUE_SIZE)).name.empty());
 }

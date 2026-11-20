@@ -78,7 +78,7 @@ void checkFormatError(const dvv::Result<void>& result) {
 TEST_SUITE("display") {
     TEST_CASE("display format and colour") {
         const media::FormatId format = media::displayFormat();
-        const media::PixelFormatDescriptor& d = media::descriptor(format);
+        const media::PixelFormatDesc& d = media::formatDesc(format);
         CHECK(d.name == "rgba16f@display");
         CHECK(d.model == media::ColourModel::Rgb);
         REQUIRE(d.componentCount == 4);
