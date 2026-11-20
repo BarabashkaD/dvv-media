@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "dvv/base/utf8.h"
 #include "dvv/media/types.h"
 
 namespace media = dvv::media;
@@ -219,24 +220,47 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
     CHECK(!error);
 }
 
-TEST_CASE("pathFromUtf8 replaces invalid UTF-8") {
-    const std::string replacement = "\xEF\xBF\xBD";
+TEST_CASE("pathFromUtf8 forwards to pathFromText") {
     auto round_trip = [](const std::string& text) {
         return media::utf8FromPath(media::pathFromUtf8(text));
     };
+#if !defined(_WIN32)
+    // POSIX: the bytes are the path, unchanged.
+    CHECK(round_trip("a\xFF"
+                     "b") ==
+          "a\xFF"
+          "b");
+    CHECK(round_trip("\xE6\x97") == "\xE6\x97");                  // truncated
+    CHECK(round_trip("\xC0\xAF") == "\xC0\xAF");                  // overlong
+    CHECK(round_trip("\xED\xA0\x80") == "\xED\xA0\x80");          // surrogate
+    CHECK(round_trip("\xF0\x9F\x8E\x9E") == "\xF0\x9F\x8E\x9E");  // U+1F39E, valid
+#else
+    // Windows: each maximal ill-formed subpart becomes U+FFFD.
+    const std::string replacement = "\xEF\xBF\xBD";
     CHECK(round_trip("a\xFF"
                      "b") == "a" + replacement + "b");
-    CHECK(round_trip("\xE6\x97") == replacement + replacement);                    // truncated
+    CHECK(round_trip("\xE6\x97") == replacement);                                  // truncated
     CHECK(round_trip("\xC0\xAF") == replacement + replacement);                    // overlong
     CHECK(round_trip("\xED\xA0\x80") == replacement + replacement + replacement);  // surrogate
     CHECK(round_trip("\xF0\x9F\x8E\x9E") == "\xF0\x9F\x8E\x9E");                   // U+1F39E, valid
+#endif
     CHECK(round_trip("").empty());
+}
+
+TEST_CASE("the path forwarders equal the dvv-base names") {
+    for (const std::string& text : {std::string("clip.yuv"), std::string("Grüße-日本.yuv")}) {
+        CHECK(media::pathFromUtf8(text) == dvv::pathFromText(text));
+        const fs::path path = dvv::pathFromText(text);
+        CHECK(media::utf8FromPath(path) == dvv::pathText(path));
+    }
 }
 
 #if defined(_WIN32)
 // A Windows path is UTF-16 and may hold an unpaired surrogate, which has no UTF-8 form.
-TEST_CASE("utf8FromPath reports a path that is not representable") {
+TEST_CASE("utf8FromPath replaces an unpaired surrogate") {
     const fs::path path(std::wstring{L'a', static_cast<wchar_t>(0xD800), L'b'});
-    CHECK(media::utf8FromPath(path) == "(path not representable as UTF-8)");
+    CHECK(media::utf8FromPath(path) ==
+          "a\xEF\xBF\xBD"
+          "b");
 }
 #endif

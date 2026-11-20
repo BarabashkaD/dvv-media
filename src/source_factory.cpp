@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "dvv/base/log.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/clip_json.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/file_reader.h"
@@ -47,7 +48,8 @@ std::string describeCurrentException() {
 
 // The first HEAD_BYTES bytes of the request's file; runs on the io executor.
 Result<std::vector<std::byte>> readHead(const Uri& uri) {
-    DVV_TRY(const platform::FileReader reader, platform::FileReader::open(pathFromUtf8(uri.path)));
+    DVV_TRY(const platform::FileReader reader,
+            platform::FileReader::open(dvv::pathFromText(uri.path)));
     std::vector<std::byte> head(static_cast<std::size_t>(std::min(reader.size(), HEAD_BYTES)));
     DVV_TRY(const std::size_t read, reader.readAt(0, head));
     head.resize(read);
@@ -59,7 +61,7 @@ Result<std::vector<std::byte>> readHead(const Uri& uri) {
 std::optional<Sidecar> readSidecar(const Uri& uri) {
     std::string path = uri.path + ".json";
     std::error_code error;
-    if (!std::filesystem::is_regular_file(pathFromUtf8(path), error)) {
+    if (!std::filesystem::is_regular_file(dvv::pathFromText(path), error)) {
         return std::nullopt;
     }
     auto text = readSmallFile(path);

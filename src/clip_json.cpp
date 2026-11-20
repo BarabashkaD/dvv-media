@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "dvv/base/json.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
@@ -276,7 +277,8 @@ Result<ClipDescription> parseClipJson(std::string_view text, std::string_view cl
 }
 
 Result<std::string> readSmallFile(std::string_view utf8_path) {
-    DVV_TRY(const platform::FileReader reader, platform::FileReader::open(pathFromUtf8(utf8_path)));
+    DVV_TRY(const platform::FileReader reader,
+            platform::FileReader::open(dvv::pathFromText(utf8_path)));
     if (reader.size() > MAX_SMALL_FILE) {
         return makeError(Errc::Format, std::format("'{}' is too large", utf8_path));
     }

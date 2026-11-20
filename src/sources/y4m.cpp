@@ -26,6 +26,7 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
@@ -261,7 +262,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     DVV_TRY_VOID(detail::checkParameters(uri, ALLOWED));
     DVV_TRY(const ColourSpec query_spec, colourSpecFromQuery(uri));
     DVV_TRY(platform::FileReader reader,
-            platform::FileReader::open(pathFromUtf8(uri.path), request.fileReads));
+            platform::FileReader::open(dvv::pathFromText(uri.path), request.fileReads));
 
     // The header lies in the first Y4M_MAX_HEADER bytes; an unbuffered read needs an aligned
     // whole buffer.

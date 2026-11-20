@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "dvv/base/error.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
@@ -226,7 +227,7 @@ TEST_CASE("clip JSON: the small-file reader and loadClipJson") {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << text;
         REQUIRE(file);
-        return media::utf8FromPath(path);
+        return dvv::pathText(path);
     };
     const std::string text = R"({"rawreelClip": 1, "format": "@f.json", "frameRate": 30})";
     const std::string clip = write("c.json", text);
@@ -237,12 +238,12 @@ TEST_CASE("clip JSON: the small-file reader and loadClipJson") {
     const auto loaded = media::loadClipJson(clip);
     REQUIRE_MESSAGE(loaded.has_value(), loaded.error().describe());
     CHECK(loaded->fps == media::Rational{.num = 30, .den = 1});
-    std::string format = "@" + media::utf8FromPath(directory.path() / "f.json");
+    std::string format = "@" + dvv::pathText(directory.path() / "f.json");
     std::ranges::replace(format, '\\', '/');
     CHECK(loaded->format == format);
 
     // A missing file is Io; a file over 1 MiB is Format "'<file>' is too large".
-    const std::string missing = media::utf8FromPath(directory.path() / "missing.json");
+    const std::string missing = dvv::pathText(directory.path() / "missing.json");
     CHECK(media::readSmallFile(missing).error().code == dvv::Errc::Io);
     CHECK(media::loadClipJson(missing).error().code == dvv::Errc::Io);
     const std::string large = write("large.json", std::string((1U << 20U) + 1U, ' '));
@@ -253,5 +254,5 @@ TEST_CASE("clip JSON: the small-file reader and loadClipJson") {
     CHECK(media::loadClipJson(write("bad.json", "{"))
               .error()
               .message.starts_with("clip description '" +
-                                   media::utf8FromPath(directory.path() / "bad.json") + "': "));
+                                   dvv::pathText(directory.path() / "bad.json") + "': "));
 }

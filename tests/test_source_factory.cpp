@@ -20,6 +20,7 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
@@ -299,7 +300,7 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: an unknown scheme is Unsupported") {
 TEST_CASE_FIXTURE(FactoryTest, "factory: a missing file is Io before any match") {
     const TemporaryDirectory directory;
     a().confidence = 95;
-    const std::string path = media::utf8FromPath(directory.path() / "missing.bin");
+    const std::string path = dvv::pathText(directory.path() / "missing.bin");
     checkError(open(path), dvv::Errc::Io);
     CHECK(a().matchCalls == 0);
     CHECK(b().matchCalls == 0);
@@ -312,14 +313,14 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: the file head is passed to match") {
 
     const auto large = patternBytes(5000);
     writeFile(directory.path() / "large.bin", large);
-    const auto opened_large = open(media::utf8FromPath(directory.path() / "large.bin"));
+    const auto opened_large = open(dvv::pathText(directory.path() / "large.bin"));
     CHECK(sourceOf(opened_large).info().provider == "fake_a");
     REQUIRE(a().lastHead.size() == 4096);
     CHECK(std::equal(a().lastHead.begin(), a().lastHead.end(), large.begin()));
 
     const auto small = patternBytes(10);
     writeFile(directory.path() / "small.bin", small);
-    const auto opened_small = open(media::utf8FromPath(directory.path() / "small.bin"));
+    const auto opened_small = open(dvv::pathText(directory.path() / "small.bin"));
     CHECK(sourceOf(opened_small).info().provider == "fake_a");
     CHECK(a().lastHead == small);
 }
@@ -328,7 +329,7 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: the sidecar <file>.json is passed to ma
     const TemporaryDirectory directory;
     a().confidence = 95;
     writeFile(directory.path() / "clip.bin", patternBytes(10));
-    const std::string path = media::utf8FromPath(directory.path() / "clip.bin");
+    const std::string path = dvv::pathText(directory.path() / "clip.bin");
 
     // No sidecar file: no sidecar and no error.
     CHECK(sourceOf(open(path)).info().provider == "fake_a");

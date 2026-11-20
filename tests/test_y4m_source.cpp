@@ -14,6 +14,7 @@
 
 #include "dvv/base/error.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
 #include "dvv/media/pixel_format.h"
@@ -86,12 +87,6 @@ void writeFile(const fs::path& path, std::span<const std::byte> bytes) {
     REQUIRE(file);
 }
 
-// The path as UTF-8 URI text (a bare path).
-std::string utf8(const fs::path& path) {
-    const std::u8string text = path.u8string();
-    return {reinterpret_cast<const char*>(text.c_str()), text.size()};
-}
-
 // The default file: FULL_HEADER and 3 frames.
 fs::path writeFull(const fs::path& directory, std::string_view name = "clip.y4m") {
     const fs::path path = directory / name;
@@ -145,7 +140,7 @@ TEST_CASE("y4m: header with every tag") {
     const TemporaryDirectory directory;
     const fs::path path = writeFull(directory.path());
     const std::vector<std::byte> head = y4mBytes(FULL_HEADER, FULL_FORMAT, 1);
-    const media::Match match = matchOf("y4m", utf8(path), head);
+    const media::Match match = matchOf("y4m", dvv::pathText(path), head);
     CHECK(match.confidence == 100);
     CHECK(match.why == "YUV4MPEG2 magic");
     CHECK(match.guess.format == idOf(FULL_FORMAT));
@@ -154,7 +149,7 @@ TEST_CASE("y4m: header with every tag") {
     CHECK(match.guess.fps == media::Rational{30000, 1001});
 
     SourceHarness harness;
-    const auto source = harness.open(utf8(path));
+    const auto source = harness.open(dvv::pathText(path));
     const media::SourceInfo& info = source->info();
     CHECK(info.provider == "y4m");
     CHECK(info.desc.format == idOf(FULL_FORMAT));
@@ -255,7 +250,7 @@ TEST_CASE("y4m: frame parameters are Unsupported") {
     writeFile(path, y4mBytes("YUV4MPEG2 W33 H17 C420\n", "yuv420p", 3, {"FRAME\n", "FRAME Ip\n"}));
 
     SourceHarness harness;
-    const auto source = harness.open(utf8(path));
+    const auto source = harness.open(dvv::pathText(path));
     CHECK(frameBytes(harness, source, 0) == packedFrame("yuv420p", 0));
     const auto second = harness.originalBytes(source, 1);
     REQUIRE_FALSE(second.has_value());
@@ -278,7 +273,7 @@ TEST_CASE("y4m: frames at unaligned offsets") {
     SourceHarness harness;
     for (const FileReadCase& mode : fileReadCases()) {
         CAPTURE(mode.reader);
-        const auto source = harness.open(utf8(path), mode.mode);
+        const auto source = harness.open(dvv::pathText(path), mode.mode);
         CHECK(source->info().reader == mode.reader);
         REQUIRE(source->info().frameCount == 5);
         CHECK(source->info().desc.format == idOf("yuv420p"));
@@ -301,7 +296,7 @@ TEST_CASE("y4m: trailing bytes") {
     SourceHarness harness;
     for (const FileReadCase& mode : fileReadCases()) {
         CAPTURE(mode.reader);
-        const auto source = harness.open(utf8(path), mode.mode);
+        const auto source = harness.open(dvv::pathText(path), mode.mode);
         CHECK(source->info().reader == mode.reader);
         CHECK(source->info().frameCount == 2);
         CHECK(source->info().warnings == std::vector<std::string>{"3 trailing bytes ignored"});
@@ -315,7 +310,7 @@ TEST_CASE("y4m: the magic decides") {
 
     const fs::path clip = directory.path() / "clip.y4m";
     writeFile(clip, y4mBytes("YUV4MPEG2 W33 H17 C420jpeg\n", "yuv420p", 2));
-    const auto y4m = harness.open(utf8(clip));
+    const auto y4m = harness.open(dvv::pathText(clip));
     CHECK(y4m->info().provider == "y4m");
     CHECK(frameBytes(harness, y4m, 1) == packedFrame("yuv420p", 1));
 
@@ -325,16 +320,16 @@ TEST_CASE("y4m: the magic decides") {
     const std::vector<std::byte> second = packedFrame("yuv420p", 1);
     frames.insert(frames.end(), second.begin(), second.end());
     writeFile(headerless, frames);
-    const media::Match none = matchOf("y4m", utf8(headerless), frames);
+    const media::Match none = matchOf("y4m", dvv::pathText(headerless), frames);
     CHECK(none.confidence == 0);
     CHECK(none.why == "no YUV4MPEG2 magic");
-    CHECK(matchOf("raw", utf8(headerless), frames).confidence == 70);
-    const auto raw = harness.open(utf8(headerless));
+    CHECK(matchOf("raw", dvv::pathText(headerless), frames).confidence == 70);
+    const auto raw = harness.open(dvv::pathText(headerless));
     CHECK(raw->info().provider == "raw");
     CHECK(raw->info().frameCount == 2);
 
     // A Y4M file with an explicit raw query: both claim it.
-    auto opened = harness.tryOpen(utf8(clip) + "?fmt=yuv420p&size=33x17");
+    auto opened = harness.tryOpen(dvv::pathText(clip) + "?fmt=yuv420p&size=33x17");
     REQUIRE_MESSAGE(opened.has_value(), opened.error().describe());
     const auto* ambiguous = std::get_if<media::Ambiguous>(&*opened);
     REQUIRE(ambiguous != nullptr);
@@ -358,7 +353,7 @@ TEST_CASE("y4m: a sidecar <file>.json is ignored") {
             REQUIRE(file);
         }
         SourceHarness harness;
-        const auto source = harness.open(utf8(path));
+        const auto source = harness.open(dvv::pathText(path));
         const media::SourceInfo& info = source->info();
         CHECK(info.provider == "y4m");
         CHECK(info.desc.width == 33);
@@ -373,10 +368,10 @@ TEST_CASE("y4m: resolved URI reopens") {
     const TemporaryDirectory directory;
     const fs::path path = writeFull(directory.path());
     SourceHarness harness;
-    const auto source = harness.open(utf8(path));
+    const auto source = harness.open(dvv::pathText(path));
     const media::SourceInfo& info = source->info();
 
-    CHECK(info.resolvedUri == "file:" + dvv::percentEncode(utf8(path)) +
+    CHECK(info.resolvedUri == "file:" + dvv::percentEncode(dvv::pathText(path)) +
                                   "?fmt=yuv420p10le&size=33x17&fps=30000/1001&impl=y4m");
 
     const auto reopened = harness.open(info.resolvedUri);
@@ -392,23 +387,24 @@ TEST_CASE("y4m: resolved URI reopens") {
 
     // The resolved URI with another format (param() takes the first fmt, so it is not appended).
     const dvv::Error mismatch =
-        openError(harness, utf8(path) + "?size=33x17&fps=30000/1001&impl=y4m&fmt=yuv420p");
+        openError(harness, dvv::pathText(path) + "?size=33x17&fps=30000/1001&impl=y4m&fmt=yuv420p");
     INFO(mismatch.describe());
     CHECK(mismatch.code == dvv::Errc::Format);
     CHECK(mismatch.message == "Y4M header says yuv420p10le");
-    CHECK(openError(harness, utf8(path) + "?impl=y4m&size=32x17").message ==
+    CHECK(openError(harness, dvv::pathText(path) + "?impl=y4m&size=32x17").message ==
           "Y4M header says 33x17");
-    CHECK(openError(harness, utf8(path) + "?impl=y4m&fps=30").message ==
+    CHECK(openError(harness, dvv::pathText(path) + "?impl=y4m&fps=30").message ==
           "Y4M header says 30000/1001");
-    CHECK(openError(harness, utf8(path) + "?impl=y4m&range=wide").code == dvv::Errc::Format);
-    CHECK(openError(harness, utf8(path) + "?impl=y4m&w=33").code == dvv::Errc::Format);
+    CHECK(openError(harness, dvv::pathText(path) + "?impl=y4m&range=wide").code ==
+          dvv::Errc::Format);
+    CHECK(openError(harness, dvv::pathText(path) + "?impl=y4m&w=33").code == dvv::Errc::Format);
 }
 
 TEST_CASE("y4m: colour query wins over the header") {
     const TemporaryDirectory directory;
     const fs::path path = writeFull(directory.path());  // XCOLORRANGE=FULL
     SourceHarness harness;
-    const auto source = harness.open(utf8(path) + "?range=limited&colour=bt2100-pq");
+    const auto source = harness.open(dvv::pathText(path) + "?range=limited&colour=bt2100-pq");
     const media::SourceInfo& info = source->info();
     CHECK(media::colourParams(info.desc.colour) ==
           media::ColourParams{.matrix = media::ColourMatrix::Bt2020Ncl,
@@ -418,7 +414,7 @@ TEST_CASE("y4m: colour query wins over the header") {
                               .kr = 0,
                               .kb = 0});
     // The resolved URI keeps the query's form: colour first, then range.
-    CHECK(info.resolvedUri == "file:" + dvv::percentEncode(utf8(path)) +
+    CHECK(info.resolvedUri == "file:" + dvv::percentEncode(dvv::pathText(path)) +
                                   "?fmt=yuv420p10le&size=33x17&fps=30000/1001&colour=bt2100-pq&"
                                   "range=limited&impl=y4m");
     const auto reopened = harness.open(info.resolvedUri);
@@ -428,7 +424,7 @@ TEST_CASE("y4m: colour query wins over the header") {
 
     // A standard without range= keeps the header's range (D5R §1.3); range= is taken with every
     // standard (U-D5-9).
-    const auto header_range = harness.open(utf8(path) + "?colour=bt709");
+    const auto header_range = harness.open(dvv::pathText(path) + "?colour=bt709");
     CHECK(media::colourParams(header_range->info().desc.colour) ==
           media::ColourParams{.matrix = media::ColourMatrix::Bt709,
                               .range = media::ColourRange::Full,
@@ -436,17 +432,17 @@ TEST_CASE("y4m: colour query wins over the header") {
                               .primaries = media::Primaries::Bt709,
                               .kr = 0,
                               .kb = 0});
-    CHECK(header_range->info().resolvedUri == "file:" + dvv::percentEncode(utf8(path)) +
+    CHECK(header_range->info().resolvedUri == "file:" + dvv::percentEncode(dvv::pathText(path)) +
                                                   "?fmt=yuv420p10le&size=33x17&fps=30000/1001&"
                                                   "colour=bt709&impl=y4m");
-    const auto limited = harness.open(utf8(path) + "?colour=bt601-ntsc&range=limited");
+    const auto limited = harness.open(dvv::pathText(path) + "?colour=bt601-ntsc&range=limited");
     CHECK(media::colourParams(limited->info().desc.colour).range == media::ColourRange::Limited);
 
-    const auto bad = openError(harness, utf8(path) + "?colour=bt601");
+    const auto bad = openError(harness, dvv::pathText(path) + "?colour=bt601");
     CHECK(bad.code == dvv::Errc::Format);
     CHECK(bad.message ==
           "bad colour 'bt601' (bt601-ntsc, bt601-pal, bt709, bt2020, bt2100-pq, bt2100-hlg)");
-    const auto removed = openError(harness, utf8(path) + "?matrix=bt709");
+    const auto removed = openError(harness, dvv::pathText(path) + "?matrix=bt709");
     CHECK(removed.code == dvv::Errc::Format);
     CHECK(removed.message ==
           "unknown parameter 'matrix' (set the colour with colour=<standard>: "
@@ -461,7 +457,7 @@ TEST_CASE("y4m: a preset leaves the range of a gray stream alone (M4-D5-RGBRANGE
     writeFile(untagged_path, y4mBytes("YUV4MPEG2 W33 H17 Cmono\n", "gray", 2));
     SourceHarness harness;
     const auto range_of = [&](const fs::path& path, std::string_view query) {
-        const auto source = harness.open(utf8(path) + std::string(query));
+        const auto source = harness.open(dvv::pathText(path) + std::string(query));
         CHECK(media::colourParams(source->info().desc.colour).matrix ==
               media::ColourMatrix::Unspecified);
         return media::resolveColour(source->info().desc).params.range;

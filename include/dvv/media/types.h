@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "dvv/base/error.h"
+#include "dvv/base/utf8.h"
 #include "dvv/gpu/device_id.h"
 
 namespace dvv::media {
@@ -90,12 +91,14 @@ struct ColourParams {
 // id 0 (all Unspecified).
 [[nodiscard]] const ColourParams& colourParams(ColourId id) noexcept;
 
-// UTF-8 text to a path through std::u8string, never through the ANSI code page on Windows (D19).
-// Invalid UTF-8 is replaced first (each byte that does not start a well-formed sequence becomes
-// U+FFFD), so the conversion never throws.
-[[nodiscard]] std::filesystem::path pathFromUtf8(std::string_view utf8);
-// The opposite direction for messages and resolved URIs: path.u8string(), never path.string().
-// Returns "(path not representable as UTF-8)" if the platform conversion fails.
-[[nodiscard]] std::string utf8FromPath(const std::filesystem::path& path);
+// Deprecated (removed in 1.0.0): use dvv::pathFromText.
+[[nodiscard]] inline std::filesystem::path pathFromUtf8(std::string_view utf8) {
+    return dvv::pathFromText(utf8);
+}
+// Deprecated (removed in 1.0.0): use dvv::pathText (names the file again) or
+// dvv::pathDisplayText (shown text).
+[[nodiscard]] inline std::string utf8FromPath(const std::filesystem::path& path) {
+    return dvv::pathText(path);
+}
 
 }  // namespace dvv::media

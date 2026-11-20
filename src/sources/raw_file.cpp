@@ -27,6 +27,7 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/clip_json.h"
 #include "dvv/media/file_name.h"
 #include "dvv/media/format_json.h"
@@ -328,7 +329,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     DVV_TRY(const FrameGeometry frame, geometry(format, width, height));
 
     DVV_TRY(platform::FileReader reader,
-            platform::FileReader::open(pathFromUtf8(uri.path), request.fileReads));
+            platform::FileReader::open(dvv::pathFromText(uri.path), request.fileReads));
     const std::uint64_t frame_bytes = frame.bytes;
     const std::uint64_t frames = reader.size() / frame_bytes;
 
