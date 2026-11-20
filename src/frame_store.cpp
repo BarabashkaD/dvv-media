@@ -922,7 +922,12 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
                 wake(woken);
                 co_return std::unexpected(error);
             }
+            // The step's runs and their time count only when the step ends not cancelled (below).
+            const std::size_t slot = step.converter == nullptr ? 0 : slotOf(*step.converter);
+            std::uint64_t runs = 1;
+            auto started = std::chrono::steady_clock::now();
             Result<std::shared_ptr<IFrame>> made = co_await runStep(plan, step, input, input_view);
+            auto elapsed = std::chrono::steady_clock::now() - started;
             if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory &&
                 !plan.stop.stop_requested()) {
                 // D10: evict the output's tier to half its budget, then run the step once more.
@@ -934,7 +939,10 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
                     settleLocked(*step.output);
                 }
                 trimForRetry(*this, s, step.output->tier);
+                ++runs;
+                started = std::chrono::steady_clock::now();
                 made = co_await runStep(plan, step, input, input_view);
+                elapsed += std::chrono::steady_clock::now() - started;
             }
             std::vector<detail::Waiter*> woken;
             std::optional<Error> error;
@@ -942,7 +950,20 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             {
                 const std::scoped_lock lock(s.mutex);
                 settleLocked(*step.output);  // published or failed: no longer being made
-                if (plan.stop.stop_requested()) {
+                // One read decides both: a cancelled step counts in no counter.
+                const bool stopped = plan.stop.stop_requested();
+                if (!stopped) {
+                    detail::ConverterSlot& counters = *s.slots[slot];
+                    counters.runs.fetch_add(runs, std::memory_order_relaxed);
+                    if (made && *made) {
+                        counters.bytes.fetch_add((*made)->bytes(), std::memory_order_relaxed);
+                    }
+                    counters.nanoseconds.fetch_add(
+                        static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+                        std::memory_order_relaxed);
+                }
+                if (stopped) {
                     // A step whose origin was detached when it ends is cancelled, whatever it
                     // returned. A made frame stays in `made` and is released after unlocking.
                     cancelled = true;
@@ -981,8 +1002,6 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
                                                           std::shared_ptr<detail::Entry> input,
                                                           ViewSpec input_view) {
     detail::StoreState& s = *state_;
-    const std::size_t slot = step.converter == nullptr ? 0 : slotOf(*step.converter);
-    const auto started = std::chrono::steady_clock::now();
     Result<std::shared_ptr<IFrame>> made = makeError(Errc::Internal, "not run");
     const std::string_view name =
         step.converter == nullptr ? std::string_view("Produce") : step.converter->name();
@@ -1030,20 +1049,7 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
     } catch (...) {
         made = makeError(Errc::Internal, std::format("{} threw", name));
     }
-    if (plan.stop.stop_requested()) {
-        co_return made;  // runPlan cancels the step: no counter counts it
-    }
-    detail::ConverterSlot& counters = *s.slots[slot];
-    counters.runs.fetch_add(1, std::memory_order_relaxed);
-    if (made && *made) {
-        counters.bytes.fetch_add((*made)->bytes(), std::memory_order_relaxed);
-    }
-    counters.nanoseconds.fetch_add(
-        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       std::chrono::steady_clock::now() - started)
-                                       .count()),
-        std::memory_order_relaxed);
-    co_return made;
+    co_return made;  // runPlan counts the step's runs when it decides the step was not cancelled
 }
 
 // Publishes a step's output: checks the frame, records it, reserves one reader for the plan (its

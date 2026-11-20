@@ -1974,6 +1974,12 @@ TEST_SUITE("store") {
         gate.open();
         CHECK(isCancelled(acquired.get()));
         CHECK(store->stats().failures == failures);
+        // The step ended cancelled: neither its failed first run nor the retry counts.
+        const auto stats = store->stats();
+        REQUIRE(stats.converters.size() == 2);
+        CHECK(stats.converters[1].name == "Unpack");
+        CHECK(stats.converters[1].runs == 0);
+        CHECK(stats.converters[1].nanoseconds == 0);
         CHECK(settled(*store));
         requireInvariants(*store);
     }
