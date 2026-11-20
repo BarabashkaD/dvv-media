@@ -152,12 +152,12 @@ It offers views, described by a `ViewSpec`:
 
 The bindings are `HostPlanesB` (read-only spans and strides per plane), `VkBufferB` (the whole
 original in one buffer) and `VkImageB` (one `R8_UINT`/`R16_UINT` image per component, layout
-`GENERAL`). `bindingIf<B>(binding)` gives the binding as a `B`, or null when it holds
-another kind. Compare a `BindingKind` with `==` only; do not switch on it, cast it or hash it: it
-becomes a class in 1.0.0. A file that names `VkBufferB`, `VkImageB`, `StagingFrame`, `VkBufferFrame` or
-`VkPlanesFrame` includes `dvv/media/frame_vulkan.h`. The store's domains are `hostDomain()`, and with a GPU `stagingDomain()` and
-`deviceDomain()`. A view's `Fidelity` is `Exact` (the original bytes), `Lossless` (the unpacked
-planes) or `Derived` (the display view).
+`GENERAL`). `bindingIf<B>(binding)` gives the binding as a `B`, or null when it holds another
+kind. Compare a `BindingKind` with `==` only; do not switch on it, cast it or hash it: it becomes a
+class in 1.0.0. A file that names `VkBufferB`, `VkImageB`, `StagingFrame`, `VkBufferFrame` or
+`VkPlanesFrame` includes `dvv/media/frame_vulkan.h`. The store's domains are `hostDomain()`, and
+with a GPU `stagingDomain()` and `deviceDomain()`. A view's `Fidelity` is `Exact` (the original
+bytes), `Lossless` (the unpacked planes) or `Derived` (the display view).
 
 | Format | Binding | Memory | Made by | Fidelity |
 | --- | --- | --- | --- | --- |
