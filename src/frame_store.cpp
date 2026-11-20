@@ -135,9 +135,9 @@ void trimForRetry(FrameStore& store, const detail::StoreState& s, std::size_t ti
 
 // ---- ProduceContext ----
 
-ProduceContext::ProduceContext(FrameStore& store, FrameKey key, FrameDesc desc,
-                               IExecutor& io) noexcept
-    : store_(&store), key_(key), desc_(desc), io_(&io) {}
+ProduceContext::ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key,
+                               FrameDesc desc, IExecutor& io) noexcept
+    : store_(&store), output_(&output), key_(key), desc_(desc), io_(&io) {}
 
 Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc& desc,
                                                                 std::size_t capacity,
@@ -156,20 +156,39 @@ Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc&
                                      "do not fit into {} bytes",
                                      key_.index, key_.origin, layout.bytes, data_offset, capacity));
     }
-    const detail::StoreState& s = *store_->state_;
+    detail::StoreState& s = *store_->state_;
+    detail::Entry& output = *output_;
+    // Reserved before the allocation, so the eviction to the budget (bytes + pending) lowers the
+    // peak. The evicted entries are released after unlocking.
+    const auto reserve = [&] {
+        std::vector<std::shared_ptr<detail::Entry>> dropped;
+        const std::scoped_lock lock(s.mutex);
+        store_->reserveLocked(output, capacity);
+        store_->evictLocked(output.tier, s.tiers[output.tier].budget, dropped);
+    };
+    // Settles this call's reservation only: a source may hold another allocation of the step.
+    const auto settle = [&] {
+        const std::scoped_lock lock(s.mutex);
+        store_->settleLocked(output, capacity);
+    };
+    reserve();
     Result<platform::AlignedBuffer> allocated = s.hostAllocator(capacity, alignment);
     if (!allocated && allocated.error().code == Errc::OutOfMemory) {
-        // D10: evict the host tier to half its budget, then allocate once more.
-        trimForRetry(*store_, s, 0);
+        // D10: evict the host tier to half its budget, then allocate once more. The failed
+        // allocation is settled first and the retry reserves again, so it never counts twice.
+        settle();
+        trimForRetry(*store_, s, output.tier);
+        reserve();
         allocated = s.hostAllocator(capacity, alignment);
+    }
+    if (!allocated) {
+        settle();
     }
     DVV_TRY(platform::AlignedBuffer buffer, std::move(allocated));
     const ViewSpec view{desc.format,     desc.colour,          LayoutPolicy::Tight,
                         Api::HostPlanes, store_->hostDomain(), 0};
-    auto frame = std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()),
-                                             desc, view, std::move(buffer), capacity, data_offset);
-    evictOverBudget(*store_, s);
-    return frame;
+    return std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()), desc,
+                                       view, std::move(buffer), capacity, data_offset);
 }
 
 Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
@@ -480,6 +499,8 @@ void FrameStore::detach(OriginId origin) {
                 tier.bytes -= entry->bytes;
                 entry->counted = false;
             }
+            // A running step keeps its reservation (its memory is alive) until it returns.
+            tier.detachedReserved += entry->reserved;
             entry->inRecord = false;
             dropped.push_back(std::move(entry));
         }
@@ -851,7 +872,13 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             Result<std::shared_ptr<IFrame>> made = co_await runStep(plan, step, input, input_view);
             if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory) {
                 // D10: evict the output's tier to half its budget, then run the step once more.
-                // (Produce is not retried here: allocateHost already retried.)
+                // (Produce is not retried here: allocateHost already retried.) The failed run's
+                // reservation is settled first and the retry's runStep reserves again, so the
+                // retry never holds two and the trim sees the real figure.
+                {
+                    const std::scoped_lock lock(s.mutex);
+                    settleLocked(*step.output);
+                }
                 trimForRetry(*this, s, step.output->tier);
                 made = co_await runStep(plan, step, input, input_view);
             }
@@ -859,6 +886,7 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             std::optional<Error> error;
             {
                 const std::scoped_lock lock(s.mutex);
+                settleLocked(*step.output);  // published or failed: no longer being made
                 if (made) {
                     // On failure the frame stays in `made` and is released after unlocking.
                     if (Result<void> published = publishLocked(*step.output, *made, woken);
@@ -901,7 +929,8 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
     try {
         if (step.converter == nullptr) {
             co_await resumeOn(*s.options.cpu);  // D12: the hop before every Produce
-            ProduceContext context(*this, step.output->key, step.output->desc, *s.options.io);
+            ProduceContext context(*this, *step.output, step.output->key, step.output->desc,
+                                   *s.options.io);
             const Result<FrameRef> produced =
                 co_await plan.source->produce(step.output->key.index, context);
             if (!produced) {
@@ -914,6 +943,14 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
                 made = std::move(context.frame_);
             }
         } else {
+            {
+                // The output counts in its tier until runPlan settles it; the eviction keeps
+                // bytes + pending under the budget. Evicted entries are released after unlocking.
+                std::vector<std::shared_ptr<detail::Entry>> dropped;
+                const std::scoped_lock lock(s.mutex);
+                reserveLocked(*step.output, step.converter->outputBytes(step.output->desc));
+                evictLocked(step.output->tier, s.tiers[step.output->tier].budget, dropped);
+            }
             const Binding input_binding = input->frame->bind(input_view);
             made = co_await step.converter->run(
                 detail::ConvertInput{input->key, input->desc, input_view, *input->frame,
@@ -1043,6 +1080,8 @@ void FrameStore::touchLocked(detail::Entry& entry) noexcept {
 // Takes the entry out of the index: LRU, tier bytes, record (erased when empty). Returns the
 // record's reference to it, for release after unlocking (null when it was not in a record).
 std::shared_ptr<detail::Entry> FrameStore::removeFromIndexLocked(detail::Entry& entry) noexcept {
+    // Evicted entries are published and failed ones settled first (runPlan): none is reserved.
+    assert(entry.reserved == 0 && "an entry leaves the index with a reservation");
     detail::StoreState& s = *state_;
     detail::Tier& tier = s.tiers[entry.tier];
     if (entry.linked) {
@@ -1073,17 +1112,19 @@ std::shared_ptr<detail::Entry> FrameStore::removeFromIndexLocked(detail::Entry& 
     return owned;
 }
 
-// Evicts unleased, unpinned entries of a tier until it holds at most `target` bytes: Derived
-// entries first, then Lossless, then Exact, each pass least recently used first (§5.2).
+// Evicts unleased, unpinned entries of a tier until bytes + pending <= `target`: Derived entries
+// first, then Lossless, then Exact, each pass least recently used first (§5.2). When pending alone
+// exceeds the target, every unleased entry of the tier goes.
 void FrameStore::evictLocked(std::size_t tier_index, std::size_t target,
                              std::vector<std::shared_ptr<detail::Entry>>& dropped) {
     detail::Tier& tier = state_->tiers[tier_index];
-    if (tier.bytes <= target) {
+    const auto over = [&tier, target] { return tier.bytes + tier.pending > target; };
+    if (!over()) {
         return;
     }
     dropped.reserve(dropped.size() + tier.lru.size());  // push_back below cannot throw
     for (const Fidelity pass : {Fidelity::Derived, Fidelity::Lossless, Fidelity::Exact}) {
-        for (auto position = tier.lru.begin(); position != tier.lru.end() && tier.bytes > target;) {
+        for (auto position = tier.lru.begin(); position != tier.lru.end() && over();) {
             detail::Entry& entry = **position;
             ++position;  // removal invalidates only the removed entry's iterator
             if (entry.fidelity == pass && entry.readers == 0 && entry.pins == 0) {
@@ -1091,6 +1132,31 @@ void FrameStore::evictLocked(std::size_t tier_index, std::size_t target,
                 ++state_->counters.evictions;
             }
         }
+    }
+}
+
+// ---- Reservations ----
+
+void FrameStore::reserveLocked(detail::Entry& output, std::size_t bytes) noexcept {
+    detail::Tier& tier = state_->tiers[output.tier];
+    tier.pending += bytes;
+    output.reserved += bytes;
+    if (!output.inRecord) {
+        tier.detachedReserved += bytes;  // detach took the entry out of the index earlier
+    }
+}
+
+void FrameStore::settleLocked(detail::Entry& output) noexcept {
+    settleLocked(output, output.reserved);
+}
+
+void FrameStore::settleLocked(detail::Entry& output, std::size_t bytes) noexcept {
+    detail::Tier& tier = state_->tiers[output.tier];
+    const std::size_t settled = std::min(bytes, output.reserved);
+    tier.pending -= settled;
+    output.reserved -= settled;
+    if (!output.inRecord) {
+        tier.detachedReserved -= settled;
     }
 }
 
@@ -1248,7 +1314,8 @@ StoreStats FrameStore::stats() const {
         stats.tiers.push_back(TierStats{.domain = tier.domain,
                                         .bytes = tier.bytes,
                                         .budget = tier.budget,
-                                        .views = tier.lru.size()});
+                                        .views = tier.lru.size(),
+                                        .pending = tier.pending});
         stats.frames += tier.lru.size();  // linked = published and in the index
     }
     for (const auto& [id, info] : s.leases) {
@@ -1317,6 +1384,7 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
     const std::scoped_lock lock(s.mutex);
     std::vector<std::size_t> sums(s.tiers.size(), 0);
     std::vector<std::size_t> linked(s.tiers.size(), 0);
+    std::vector<std::size_t> reserved(s.tiers.size(), 0);
     for (const auto& [key, record] : s.records) {
         const std::string where = std::format("frame {} of origin {}", key.index, key.origin);
         if (record.entries.empty()) {
@@ -1347,6 +1415,7 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
             if (entry->counted) {
                 sums[entry->tier] += entry->bytes;
             }
+            reserved[entry->tier] += entry->reserved;
             const bool published = entry->state == EntryState::Published;
             if (entry->linked) {
                 ++linked[entry->tier];
@@ -1384,6 +1453,15 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
             return makeError(Errc::Internal,
                              std::format("tier {}: {} bytes counted but entries of {} bytes", index,
                                          tier.bytes, sums[index]));
+        }
+        // Entries that detach took out of the index keep their reservation until their step
+        // returns: they are the detached part.
+        if (reserved[index] + tier.detachedReserved != tier.pending) {
+            return makeError(
+                Errc::Internal,
+                std::format("tier {}: {} bytes pending but {} reserved by indexed "
+                            "entries and {} by detached ones",
+                            index, tier.pending, reserved[index], tier.detachedReserved));
         }
         if (linked[index] != tier.lru.size()) {
             return makeError(Errc::Internal,
@@ -1429,6 +1507,23 @@ std::vector<std::pair<ViewSpec, Fidelity>> StoreAccess::views(const FrameStore& 
         }
     }
     return views;
+}
+
+std::optional<std::size_t> StoreAccess::bytesOf(const FrameStore& store, const FrameKey& key,
+                                                const ViewSpec& view) {
+    const StoreState& s = *store.state_;
+    const std::scoped_lock lock(s.mutex);
+    const auto record = s.records.find(key);
+    if (record == s.records.end()) {
+        return std::nullopt;
+    }
+    for (const auto& entry : record->second.entries) {
+        if (entry->state == EntryState::Published &&
+            std::ranges::find(entry->views, view) != entry->views.end()) {
+            return entry->bytes;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace dvv::media::detail

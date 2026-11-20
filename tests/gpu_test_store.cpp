@@ -2,24 +2,31 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
 
+#include "converters.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executor.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/task.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/resources.h"
+#include "dvv/media/display.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
@@ -28,6 +35,7 @@
 #include "gpu_fixture.h"
 #include "gpu_unpack.h"
 #include "packed_source.h"
+#include "store_fakes.h"
 #include "store_state.h"
 
 namespace media = dvv::media;
@@ -151,6 +159,72 @@ private:
     std::shared_ptr<gpu::GpuBuffer> buffer_;
     media::FrameGeometry geometry_;
 };
+
+// Forwards every member to the wrapped converter and awaits a gate before running it.
+class GatedConverter final : public media::detail::Converter {
+public:
+    GatedConverter(std::unique_ptr<media::detail::Converter> wrapped, media::test::Gate& gate)
+        : wrapped_(std::move(wrapped)), gate_(&gate) {}
+    [[nodiscard]] std::string_view name() const noexcept override { return wrapped_->name(); }
+    [[nodiscard]] media::detail::StateKey from() const noexcept override {
+        return wrapped_->from();
+    }
+    [[nodiscard]] media::detail::StateKey to() const noexcept override { return wrapped_->to(); }
+    [[nodiscard]] LayoutPolicy outputLayout() const noexcept override {
+        return wrapped_->outputLayout();
+    }
+    [[nodiscard]] Fidelity fidelity() const noexcept override { return wrapped_->fidelity(); }
+    [[nodiscard]] double cost(const FrameDesc& desc) const noexcept override {
+        return wrapped_->cost(desc);
+    }
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return wrapped_->outputBytes(desc);
+    }
+    [[nodiscard]] dvv::Task<dvv::Result<std::shared_ptr<media::IFrame>>> run(
+        media::detail::ConvertInput input, media::detail::ConvertContext context) const override {
+        co_await gate_->wait(context.cpu);
+        co_return co_await wrapped_->run(input, context);
+    }
+
+private:
+    std::unique_ptr<media::detail::Converter> wrapped_;
+    media::test::Gate* gate_;
+};
+
+// Polls every 1 ms for up to 10 s; true when the predicate became true (no REQUIRE: helper
+// threads call it).
+bool pollFor(const std::function<bool()>& predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool reached = predicate();
+    while (!reached && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        reached = predicate();
+    }
+    return reached;
+}
+
+// The view a converter makes: its target state with the frame's colour (the display colour for
+// the display state), layout Any, in the tier of its memory kind.
+ViewSpec viewMadeBy(const media::detail::Converter& converter, const FrameDesc& desc,
+                    const FrameStore& store) {
+    const media::detail::StateKey to = converter.to();
+    std::optional<Domain> domain = store.hostDomain();
+    if (to.kind == media::MemKind::HostVisible) {
+        domain = store.stagingDomain();
+    } else if (to.kind == media::MemKind::DeviceLocal) {
+        domain = store.deviceDomain();
+    }
+    REQUIRE(domain.has_value());
+    if (to.display) {
+        return media::displayView(domain.value_or(Domain{}));
+    }
+    return ViewSpec{to.unpacked ? media::unpackedFormat(desc.format) : desc.format,
+                    desc.colour,
+                    LayoutPolicy::Any,
+                    to.api,
+                    domain.value_or(Domain{}),
+                    0};
+}
 
 }  // namespace
 
@@ -479,4 +553,84 @@ TEST_CASE_FIXTURE(GpuTest,
         CHECK(std::ranges::equal(plane, std::span(expected).subspan(offset, plane.size())));
     }
     frame.reset();  // the scope is destroyed before the buffer (member order)
+}
+
+TEST_CASE_FIXTURE(GpuTest,
+                  "store gpu: every converter's outputBytes equals the published frame's "
+                  "bytes") {
+    const FrameDesc desc{.format = idOf("yuv420p10le"), .colour = 0, .width = 34, .height = 17};
+    const GpuStore test(*this, desc, 8);
+    const auto& converters = media::detail::StoreAccess::state(*test.store).converters;
+    REQUIRE(converters.size() == 8);
+    for (std::size_t index = 0; index < converters.size(); ++index) {
+        const media::detail::Converter& converter = *converters[index];
+        if (converter.name() == "CpuUnpack") {
+            continue;  // test_frame_store.cpp checks the host converter
+        }
+        SUBCASE(std::format("{} {}", index, converter.name()).c_str()) {
+            const ViewSpec want = viewMadeBy(converter, desc, *test.store);
+            const auto key_index = static_cast<std::int64_t>(index);
+            const ReadLease lease = test.take(key_index, want, executor());
+            const std::optional<std::size_t> bytes = media::detail::StoreAccess::bytesOf(
+                *test.store, {test.origin, key_index}, lease.view());
+            CHECK(bytes.has_value());
+            CHECK(bytes.value_or(0) == converter.outputBytes(desc));
+            CHECK(converter.outputBytes(desc) > 0);
+        }
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest,
+                  "store gpu: every GPU tier is settled after a display acquire, and "
+                  "ToDisplay reserves its output") {
+    const FrameDesc desc{.format = idOf("yuv420p10le"), .colour = 0, .width = 34, .height = 17};
+    auto pool = dvv::ExecutorFactory::makeThreadPool(2);
+    REQUIRE(pool.has_value());
+    const std::shared_ptr<dvv::ThreadPool> executors = std::move(*pool);
+    auto made = media::detail::makeGpuConverters(context().shared_from_this(), executors);
+    REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+    std::vector<std::unique_ptr<media::detail::Converter>> converters = std::move(*made);
+    media::test::Gate gate;
+    const media::detail::Converter* to_display = nullptr;
+    for (std::unique_ptr<media::detail::Converter>& converter : converters) {
+        if (converter->name() == "ToDisplay") {
+            converter = std::make_unique<GatedConverter>(std::move(converter), gate);
+            to_display = converter.get();
+        }
+    }
+    REQUIRE(to_display != nullptr);
+    auto created = media::detail::StoreAccess::create(
+        {.cpu = executors, .io = executors, .gpu = context().shared_from_this()},
+        std::move(converters));
+    REQUIRE_MESSAGE(created.has_value(), created.error().describe());
+    const std::shared_ptr<FrameStore> store = std::move(*created);
+    auto attached = store->attach(std::make_shared<PackedSource>(desc, 1, SEED));
+    REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+    REQUIRE(store->deviceDomain().has_value());
+    const Domain device = store->deviceDomain().value_or(Domain{});
+
+    bool reached = false;
+    std::vector<std::size_t> pending;  // per tier, while ToDisplay waits
+    std::jthread opener([&] {
+        reached = pollFor([&] { return gate.waiting() == 1; });
+        for (const media::TierStats& tier : store->stats().tiers) {
+            pending.push_back(tier.pending);
+        }
+        gate.open();
+    });
+    const auto display =
+        syncWait(store->acquire({*attached, 0}, media::displayView(device), executor()));
+    opener.join();
+    REQUIRE_MESSAGE(display.has_value(), display.error().describe());
+    CHECK(reached);
+    const std::vector<media::TierStats> tiers = store->stats().tiers;
+    REQUIRE(pending.size() == tiers.size());
+    for (std::size_t index = 0; index < tiers.size(); ++index) {
+        // While ToDisplay ran, only its output was being made; afterwards nothing is.
+        const std::size_t expected =
+            tiers[index].domain == device ? to_display->outputBytes(desc) : 0;
+        CHECK(pending[index] == expected);
+        CHECK(tiers[index].pending == 0);
+    }
+    REQUIRE(media::detail::StoreAccess::checkInvariants(*store).has_value());
 }

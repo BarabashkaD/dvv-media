@@ -62,15 +62,28 @@ struct Edge {
     double factor = 1;
 };
 
+// The forms of a frame a converter reads or makes.
+enum class Form : std::uint8_t { Original, Unpacked, Display };
+
+// The tight bytes of the frame in `form` at its size; 0 when unknown.
+[[nodiscard]] std::uint64_t tightBytes(const FrameDesc& desc, Form form) noexcept {
+    try {
+        FormatId format = desc.format;
+        if (form == Form::Unpacked) {
+            format = unpackedFormat(desc.format);
+        } else if (form == Form::Display) {
+            format = displayFormat();
+        }
+        const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height);
+        return layout ? layout->bytes : 0;
+    } catch (...) {  // interning the unpacked format or the error message could not allocate
+        return 0;
+    }
+}
+
 // The tight bytes of the original (or, with `unpacked`, of its unpacked form); 0 when unknown.
 [[nodiscard]] double viewBytes(const FrameDesc& desc, bool unpacked) noexcept {
-    try {
-        const FormatId format = unpacked ? unpackedFormat(desc.format) : desc.format;
-        const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height);
-        return layout ? static_cast<double>(layout->bytes) : 0.0;
-    } catch (...) {  // interning the unpacked format or the error message could not allocate
-        return 0.0;
-    }
+    return static_cast<double>(tightBytes(desc, unpacked ? Form::Unpacked : Form::Original));
 }
 
 [[nodiscard]] std::string frameName(std::string_view what, const FrameKey& key) {
@@ -140,6 +153,11 @@ public:
                          .fidelity = Fidelity::Lossless,
                          .factor = 4}) {}
 
+    // The HostFrame's capacity: the unpacked form, tight.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(tightBytes(desc, Form::Unpacked));
+    }
+
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
         co_await resumeOn(context.cpu);
@@ -168,6 +186,11 @@ public:
                          .fidelity = Fidelity::Exact,
                          .factor = 1}),
           context_(std::move(context)) {}
+
+    // The staging buffer: the original padded for the unpack shader.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(unpackBufferBytes(0, tightBytes(desc, Form::Original)));
+    }
 
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
@@ -218,6 +241,11 @@ public:
           context_(std::move(context)),
           cpu_(std::move(cpu)) {}
 
+    // The device buffer: the original padded for the unpack shader.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(unpackBufferBytes(0, tightBytes(desc, Form::Original)));
+    }
+
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
         const FrameDesc& desc = input.desc;
@@ -262,6 +290,11 @@ public:
           context_(std::move(context)),
           cpu_(std::move(cpu)),
           pipeline_(std::move(pipeline)) {}
+
+    // What its VkPlanesFrame reports: the unpacked form, tight.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(tightBytes(desc, Form::Unpacked));
+    }
 
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput given,
                                                             ConvertContext context) const override {
@@ -323,6 +356,11 @@ public:
           context_(std::move(context)),
           cpu_(std::move(cpu)) {}
 
+    // The readback buffer: the original, tight.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(tightBytes(desc, Form::Original));
+    }
+
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
         const FrameDesc& desc = input.desc;
@@ -368,6 +406,11 @@ public:
                          .factor = 2}),
           context_(std::move(context)),
           cpu_(std::move(cpu)) {}
+
+    // The readback buffer: the unpacked form, tight.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(tightBytes(desc, Form::Unpacked));
+    }
 
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
@@ -433,6 +476,11 @@ public:
           cpu_(std::move(cpu)),
           pipeline_(std::move(pipeline)),
           dummies_(std::move(dummies)) {}
+
+    // What its VkPlanesFrame reports: the display format at frame size, tight.
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& desc) const noexcept override {
+        return static_cast<std::size_t>(tightBytes(desc, Form::Display));
+    }
 
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput given,
                                                             ConvertContext context) const override {

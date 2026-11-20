@@ -102,6 +102,7 @@ private:
 struct TierStats {
     Domain domain;
     std::size_t bytes = 0, budget = 0, views = 0;
+    std::size_t pending = 0;  // allocated for frames being made, not yet published
 };
 struct ConverterStats {
     std::string name;
@@ -171,6 +172,7 @@ public:
         std::source_location where = std::source_location::current());
     [[nodiscard]] StoreStats stats() const;
     [[nodiscard]] std::vector<LeaseInfo> outstandingLeases() const;
+    // Evicts unleased, unpinned entries until bytes + pending <= target_bytes.
     void trim(Domain domain, std::size_t target_bytes);
 
 private:
@@ -216,6 +218,11 @@ private:
         detail::Entry& entry) noexcept;
     void evictLocked(std::size_t tier_index, std::size_t target,
                      std::vector<std::shared_ptr<detail::Entry>>& dropped);
+    // A frame being made counts in its tier from allocation to publish (TierStats::pending).
+    void reserveLocked(detail::Entry& output, std::size_t bytes) noexcept;  // tier.pending += bytes
+    void settleLocked(detail::Entry& output) noexcept;  // tier.pending -= reserved; reserved = 0
+    // Settles `bytes` of the entry's reservation: an allocation that failed.
+    void settleLocked(detail::Entry& output, std::size_t bytes) noexcept;
     void releaseLease(detail::LeaseCore& core) noexcept;
     [[nodiscard]] std::size_t slotOf(const detail::Converter& converter) const noexcept;
     [[nodiscard]] std::optional<std::size_t> tierOf(const Domain& domain) const noexcept;

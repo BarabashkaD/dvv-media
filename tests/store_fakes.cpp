@@ -58,8 +58,17 @@ Task<Result<FrameRef>> FakeSource::produce(std::int64_t index, ProduceContext& c
     }
     const FrameGeometry layout =
         co_try(geometry(info_.desc.format, info_.desc.width, info_.desc.height));
-    const std::shared_ptr<HostFrame> frame =
-        co_try(ctx.allocateHost(info_.desc, static_cast<std::size_t>(layout.bytes), 64, 0));
+    const auto capacity = static_cast<std::size_t>(layout.bytes);
+    const std::shared_ptr<HostFrame> frame = co_try(ctx.allocateHost(info_.desc, capacity, 64, 0));
+    while (takeOne(extraAllocations)) {
+        static_cast<void>(co_try(ctx.allocateHost(info_.desc, capacity, 64, 0)));
+    }
+    if (afterAllocate != nullptr) {
+        co_await afterAllocate->wait(ctx.io());
+    }
+    if (takeOne(failAfterAllocate)) {
+        co_return makeError(Errc::Io, "fake read error");
+    }
     const std::span<std::byte> data = frame->data();
     for (std::size_t i = 0; i < data.size(); ++i) {
         data[i] = pattern(index, i);
@@ -91,7 +100,7 @@ Binding FakeFrame::bind(const ViewSpec& native) const {
 Task<Result<std::shared_ptr<IFrame>>> FakeConverter::run(detail::ConvertInput input,
                                                          detail::ConvertContext context) const {
     co_await resumeOn(context.cpu);
-    if (config_.gate != nullptr) {
+    if (config_.gate != nullptr && !takeOne(gateSkips)) {
         co_await config_.gate->wait(context.cpu);
     }
     runs.fetch_add(1);

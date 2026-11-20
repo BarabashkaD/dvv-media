@@ -65,6 +65,9 @@ struct Entry {
     std::vector<ViewSpec> views;  // frame->nativeViews()
     SyncPoint ready{};
     std::size_t bytes = 0;
+    // Bytes allocated for this pending entry's frame: in tiers[tier].pending, and in its
+    // detachedReserved once detach took the entry out of the index; guarded by the mutex.
+    std::size_t reserved = 0;
 };
 
 struct Record {
@@ -83,6 +86,9 @@ struct Tier {
     Domain domain;
     std::size_t budget = 0;
     std::size_t bytes = 0;
+    std::size_t pending = 0;  // the sum of `reserved` over the tier's entries
+    // The part of `pending` held by entries out of the index (detached while their step runs).
+    std::size_t detachedReserved = 0;
     std::list<Entry*> lru;  // published in-index entries; front = least recently used
 };
 
@@ -205,7 +211,8 @@ struct StoreAccess {
     // Internal with the first violated rule: per tier, bytes == the sum of its counted entries
     // and every linked entry is published, in the index and counted; no empty record; per record,
     // at most one non-failed original and no two non-failed entries with the same planned view
-    // and fidelity; per entry, read leases <= readers and pin leases == pins (a share is a lease).
+    // and fidelity; per entry, read leases <= readers and pin leases == pins (a share is a lease);
+    // per tier, pending == the sum of `reserved` over its indexed entries + detachedReserved.
     // Every rule holds whenever the mutex is free, so it may also run while other threads acquire,
     // release and trim.
     // A lease is attributed to the in-index entry of its key that offers its view, so call it while
@@ -220,6 +227,11 @@ struct StoreAccess {
     // order.
     [[nodiscard]] static std::vector<std::pair<ViewSpec, Fidelity>> views(const FrameStore& store,
                                                                           const FrameKey& key);
+    // The `bytes` of the published in-index entry of a key that offers `view`; nullopt without
+    // one.
+    [[nodiscard]] static std::optional<std::size_t> bytesOf(const FrameStore& store,
+                                                            const FrameKey& key,
+                                                            const ViewSpec& view);
 };
 
 }  // namespace dvv::media::detail

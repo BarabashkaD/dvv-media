@@ -19,6 +19,10 @@
 
 namespace dvv::media {
 
+namespace detail {
+struct Entry;
+}  // namespace detail
+
 enum class SourceAccess : std::uint8_t { RandomCheap, RandomCostly, Sequential };
 
 struct SourceInfo {
@@ -61,7 +65,8 @@ public:
     // A host frame for this key: `capacity` bytes aligned to `alignment`, frame data at
     // `data_offset`. Errc::Internal when desc differs from the source's, the alignment is not a
     // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (Task 7b: after
-    // one eviction retry).
+    // one eviction retry). Counts `capacity` in the host tier from the call until the frame is
+    // published or the produce step ends.
     [[nodiscard]] Result<std::shared_ptr<HostFrame>> allocateHost(const FrameDesc& desc,
                                                                   std::size_t capacity,
                                                                   std::size_t alignment,
@@ -74,8 +79,10 @@ public:
 
 private:
     friend class FrameStore;
-    ProduceContext(FrameStore& store, FrameKey key, FrameDesc desc, IExecutor& io) noexcept;
+    ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key, FrameDesc desc,
+                   IExecutor& io) noexcept;
     FrameStore* store_;
+    detail::Entry* output_;  // the step's pending output, which holds its reservation
     FrameKey key_;
     FrameDesc desc_;
     IExecutor* io_;

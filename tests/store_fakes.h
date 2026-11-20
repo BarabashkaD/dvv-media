@@ -91,7 +91,10 @@ public:
     std::atomic<int> produced{0};
     std::atomic<int> failNext{0};  // that many produces return Io "fake read error"
     std::atomic<bool> throwNext{false};
-    Gate* gate = nullptr;  // awaited on ctx.io() before allocating
+    Gate* gate = nullptr;                  // awaited on ctx.io() before allocating
+    Gate* afterAllocate = nullptr;         // awaited on ctx.io() after allocateHost, before publish
+    std::atomic<int> extraAllocations{0};  // that many extra allocateHost calls, frames dropped
+    std::atomic<int> failAfterAllocate{0};  // that many produces return Io after allocateHost
 
 private:
     SourceInfo info_;
@@ -124,6 +127,7 @@ public:
         Fidelity fidelity = Fidelity::Lossless;
         double cost = 1;
         Gate* gate = nullptr;
+        std::size_t outputBytes = 0;  // what outputBytes() reports
     };
     explicit FakeConverter(Config config) : config_(std::move(config)) {}
 
@@ -135,10 +139,14 @@ public:
     [[nodiscard]] double cost(const FrameDesc& /*desc*/) const noexcept override {
         return config_.cost;
     }
+    [[nodiscard]] std::size_t outputBytes(const FrameDesc& /*desc*/) const noexcept override {
+        return config_.outputBytes;
+    }
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(
         detail::ConvertInput input, detail::ConvertContext context) const override;
 
     mutable std::atomic<int> runs{0};
+    mutable std::atomic<int> gateSkips{0};  // that many runs skip the gate
     mutable std::atomic<int> failNext{0};
     mutable std::atomic<Errc> failWith{Errc::Io};
     mutable std::atomic<bool> wrongView{false};  // the frame's view gets layout RowAlign256

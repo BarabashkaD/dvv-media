@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -120,12 +121,14 @@ Task<Result<ReadLease>> acquireAndRecord(std::shared_ptr<FrameStore> store, Fram
     co_return lease;
 }
 
-std::unique_ptr<FakeConverter> makeUnpack() {
+std::unique_ptr<FakeConverter> makeUnpack(Gate* gate = nullptr, std::size_t output_bytes = 0) {
     return std::make_unique<FakeConverter>(FakeConverter::Config{
         .name = "Unpack",
         .from = dvv::media::detail::PRODUCED,
         .to = {.unpacked = true, .api = Api::HostPlanes, .kind = dvv::media::MemKind::Host},
-        .fidelity = dvv::media::Fidelity::Lossless});
+        .fidelity = dvv::media::Fidelity::Lossless,
+        .gate = gate,
+        .outputBytes = output_bytes});
 }
 
 constexpr StateKey P = dvv::media::detail::PRODUCED;
@@ -178,6 +181,28 @@ std::optional<std::uint32_t> rootReaders(FrameStore& store, const FrameKey& key)
 // A view of the frame's own format and colour.
 ViewSpec viewOf(FormatId format, Api api, Domain domain) {
     return ViewSpec{format, 0, LayoutPolicy::Any, api, domain, 0};
+}
+
+// The bytes the fake source allocates for one frame (gray 16x8).
+constexpr std::size_t CAPACITY = 128;
+
+// The pending bytes of the host tier (no REQUIRE: openers call it on their own thread).
+std::size_t hostPending(const FrameStore& store) {
+    const auto stats = store.stats();
+    return stats.tiers.empty() ? 0 : stats.tiers[0].pending;
+}
+
+// Every tier's pending bytes are 0.
+bool settled(const FrameStore& store) {
+    const auto stats = store.stats();
+    return std::ranges::all_of(stats.tiers, [](const auto& tier) { return tier.pending == 0; });
+}
+
+// The host tier's detached reservations, read under the store's mutex.
+std::size_t hostDetachedReserved(FrameStore& store) {
+    const StoreState& s = StoreAccess::state(store);
+    const std::scoped_lock lock(s.mutex);
+    return s.tiers[0].detachedReserved;
 }
 
 }  // namespace
@@ -1271,9 +1296,9 @@ TEST_SUITE("store") {
             options.hostBudget = 256;
         };
         {
-            // allocateHost of frame 1 sees 128 bytes and evicts nothing. The plan then publishes
-            // frame 1 and its unpacked view (384 bytes), so only the eviction after the plan
-            // brings the tier back to its budget.
+            // allocateHost of frame 1 sees 128 bytes plus its own 128 pending (the budget) and
+            // evicts nothing. The plan then publishes frame 1 and its unpacked view (384 bytes), so
+            // only the eviction after the plan brings the tier back to its budget.
             const auto store = makeStore(listOf(makeUnpack()), {}, budget);
             const OriginId origin = store->attach(makeSource()).value();
             static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
@@ -1421,6 +1446,297 @@ TEST_SUITE("store") {
         store->trim(Domain{MemKind::DeviceLocal}, 0);
         CHECK(store->stats().frames == 1);
         CHECK(store->stats().evictions == 0);
+        requireInvariants(*store);
+    }
+
+    // ---- Pending bytes: a tier counts the frames being made ----
+
+    TEST_CASE_FIXTURE(StoreTest, "pending host bytes are counted while a produce runs") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        static_cast<void>(take(*store, {origin, 1}, hostView, *requester));  // one cached frame
+        const std::size_t before = store->stats().tiers[0].bytes;
+        Gate gate;
+        source->afterAllocate = &gate;
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            gate.open();
+        });
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == CAPACITY);
+        CHECK(bytes == before);
+        const auto after = store->stats().tiers[0];
+        CHECK(after.pending == 0);
+        CHECK(after.bytes == before + CAPACITY);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "pending bytes evict cached frames, never leased or pinned ones") {
+        const auto store = makeStore(
+            {}, {}, [](dvv::media::FrameStoreOptions& options) { options.hostBudget = 1024; });
+        const auto source = makeSource(10);
+        const OriginId origin = store->attach(source).value();
+        for (std::int64_t index = 0; index < 6; ++index) {
+            static_cast<void>(take(*store, {origin, index}, hostView, *requester));
+        }
+        const ReadLease leased = take(*store, {origin, 0}, hostView, *requester);
+        Result<PinLease> pinned = syncWait(store->pin({origin, 1}, hostView, *requester));
+        REQUIRE(pinned.has_value());
+        REQUIRE(store->stats().tiers[0].bytes == 6 * CAPACITY);
+
+        // K = 4 concurrent produces of fresh keys, each held after its allocation.
+        constexpr std::size_t PRODUCES = 4;
+        Gate gate;
+        source->afterAllocate = &gate;
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::uint64_t evictions = 0;
+        std::size_t outstanding = 0;
+        bool leases_valid = false;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == PRODUCES; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            evictions = stats.evictions;
+            outstanding = store->outstandingLeases().size();
+            leases_valid = leased.desc() == desc && pinned && pinned->desc() == desc;
+            gate.open();
+        });
+        std::vector<Task<Result<ReadLease>>> tasks;
+        tasks.reserve(PRODUCES);
+        for (std::size_t i = 0; i < PRODUCES; ++i) {
+            tasks.push_back(
+                store->acquire({origin, static_cast<std::int64_t>(6 + i)}, hostView, *requester));
+        }
+        std::vector<Result<ReadLease>> results = syncWait(whenAll(std::move(tasks)));
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == PRODUCES * CAPACITY);
+        CHECK(evictions >= 2);
+        CHECK(bytes + pending <= 1024);
+        CHECK(leases_valid);
+        CHECK(outstanding == 2);
+        for (const Result<ReadLease>& result : results) {
+            CHECK(result.has_value());
+        }
+        results.clear();
+        requireInvariants(*store);
+        CHECK(settled(*store));
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a failed produce or converter step releases its reservation") {
+        {
+            const auto store = makeStore();
+            const auto source = makeSource();
+            source->failAfterAllocate = 1;
+            const OriginId origin = store->attach(source).value();
+            const Result<ReadLease> failed =
+                syncWait(store->acquire({origin, 0}, hostView, *requester));
+            REQUIRE_FALSE(failed.has_value());
+            CHECK(failed.error().message == "fake read error");
+            CHECK(settled(*store));
+            requireInvariants(*store);
+        }
+        auto unpack = makeUnpack(nullptr, 64);
+        unpack->failNext = 1;
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        const Result<ReadLease> failed =
+            syncWait(store->acquire({origin, 0}, planesView, *requester));
+        REQUIRE_FALSE(failed.has_value());
+        CHECK(failed.error().message == "fake convert error");
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "the OOM retry does not double the reservation") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();  // the allocator lives in the store: no cycle
+        std::atomic<int> calls{0};
+        std::optional<std::size_t> during;  // written by the retry, read after the acquire
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &during, raw](std::size_t bytes,
+                                   std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                if (calls.fetch_add(1) == 0) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                during = raw->stats().tiers[0].pending;
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const OriginId origin = store->attach(makeSource()).value();
+        const Result<ReadLease> lease = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(lease.has_value());
+        CHECK(calls.load() == 2);
+        CHECK(during.value_or(0) == CAPACITY);
+        CHECK(hostPending(*store) == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter OOM retry does not double the reservation") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        auto unpack = makeUnpack(&gate, OUTPUT);
+        unpack->failWith = Errc::OutOfMemory;
+        unpack->failNext = 1;
+        unpack->gateSkips = 1;  // the first run fails at once, the retry waits on the gate
+        const FakeConverter* const converter = unpack.get();
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            pending = hostPending(*store);
+            gate.open();
+        });
+        const Result<ReadLease> planes =
+            syncWait(store->acquire({origin, 0}, planesView, *requester));
+        opener.join();
+        CHECK(reached);
+        CHECK(planes.has_value());
+        CHECK(converter->runs.load() == 2);
+        CHECK(pending == OUTPUT);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter step holds its output reservation") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        const auto store = makeStore(listOf(makeUnpack(&gate, OUTPUT)));
+        const OriginId origin = store->attach(makeSource()).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            gate.open();
+        });
+        const ReadLease planes = take(*store, {origin, 0}, planesView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == OUTPUT);
+        const auto after = store->stats().tiers[0];
+        CHECK(after.pending == 0);
+        CHECK(after.bytes == bytes + CAPACITY);  // the FakeFrame copies the 128-byte plane
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest,
+                      "every converter's outputBytes equals the published frame's bytes") {
+        const auto store = makeStore(dvv::media::detail::makeHostConverters());
+        const OriginId origin = store->attach(makeSource()).value();
+        const auto& converters = StoreAccess::state(*store).converters;  // fixed after create
+        REQUIRE_FALSE(converters.empty());
+        for (std::size_t index = 0; index < converters.size(); ++index) {
+            const Converter& converter = *converters[index];
+            SUBCASE(std::format("{} {}", index, converter.name()).c_str()) {
+                const StateKey to = converter.to();
+                REQUIRE(to.kind == MemKind::Host);
+                const ViewSpec want = viewOf(to.unpacked ? planesView.format : desc.format, to.api,
+                                             store->hostDomain());
+                const FrameKey key{origin, static_cast<std::int64_t>(index)};
+                const ReadLease lease = take(*store, key, want, *requester);
+                const std::optional<std::size_t> bytes =
+                    StoreAccess::bytesOf(*store, key, lease.view());
+                CHECK(bytes.has_value());
+                CHECK(bytes.value_or(0) == converter.outputBytes(desc));
+                CHECK(converter.outputBytes(desc) > 0);
+            }
+        }
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach while a produce runs") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        std::size_t before_detach = 0;
+        std::size_t after_detach = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            before_detach = hostPending(*store);
+            store->detach(origin);
+            after_detach = hostPending(*store);
+            gate.open();
+        });
+        // Only the counts are checked: the acquire's own result is not part of this case.
+        static_cast<void>(syncWait(store->acquire({origin, 0}, hostView, *requester)));
+        opener.join();
+        CHECK(reached);
+        CHECK(before_detach == CAPACITY);
+        CHECK(after_detach == CAPACITY);  // the step's memory is alive until it returns
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest,
+                      "detach keeps a running step's reservation in the detached figure") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        Result<void> invariants = dvv::makeError(Errc::Internal, "not checked");
+        std::size_t pending = 0;
+        std::size_t detached = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            store->detach(origin);
+            invariants = StoreAccess::checkInvariants(*store);
+            pending = hostPending(*store);
+            detached = hostDetachedReserved(*store);
+            gate.open();
+        });
+        static_cast<void>(syncWait(store->acquire({origin, 0}, hostView, *requester)));
+        opener.join();
+        CHECK(reached);
+        CHECK_MESSAGE(invariants.has_value(),
+                      (invariants ? std::string() : invariants.error().message));
+        CHECK(pending == CAPACITY);
+        CHECK(detached == CAPACITY);  // the entry left the index with its reservation
+        CHECK(settled(*store));
+        CHECK(hostDetachedReserved(*store) == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "two allocations in one produce are both counted") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        source->extraAllocations = 1;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            pending = hostPending(*store);
+            gate.open();
+        });
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == 2 * CAPACITY);
+        CHECK(settled(*store));
         requireInvariants(*store);
     }
 }

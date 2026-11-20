@@ -16,6 +16,7 @@
 
 #include "dvv/base/utf8.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/types.h"
 
@@ -124,6 +125,17 @@ TEST_CASE("bindingIf returns only its own kind") {
     CHECK(read->planes[1].size() == 2);
     CHECK(read->strides == host.strides);
     CHECK(media::bindingIf<media::VkImageB>(binding) == nullptr);
+}
+
+// Additivity: the 0.1.1 initialisers of TierStats keep compiling (warnings are errors) until 1.0.0.
+TEST_CASE("TierStats keeps its 0.1.1 initialisers") {
+    const media::TierStats positional{media::Domain{}, 1, 2, 3};
+    const media::TierStats designated{
+        .domain = media::Domain{}, .bytes = 1, .budget = 2, .views = 3};
+    CHECK(positional.pending == 0);
+    CHECK(designated.pending == 0);
+    CHECK(positional.views == 3);
+    CHECK(designated.views == 3);
 }
 
 TEST_CASE("colour interning") {
