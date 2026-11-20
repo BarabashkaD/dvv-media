@@ -24,7 +24,7 @@ struct Rational {
 // header without F, a container without a rate).
 inline constexpr Rational FALLBACK_FPS{25, 1};
 
-using FormatId =std::uint32_t;  // index into the process-wide format table (catalogue first)
+using FormatId = std::uint32_t;  // index into the process-wide format table (catalogue first)
 using ColourId = std::uint32_t;  // index into the process-wide colour table (0 = all Unspecified)
 using OriginId = std::uint64_t;  // 0 = none
 
