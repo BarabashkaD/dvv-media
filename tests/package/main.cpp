@@ -54,14 +54,9 @@ int main() {
         std::puts("parseSize(1920x1080) differs");
         ok = false;
     }
-    if (vulkan::BUFFER == vulkan::IMAGE) {
-        std::puts("vulkan::BUFFER equals vulkan::IMAGE");
-        ok = false;
-    }
-    if (DISPLAY_IMAGE_FORMAT != VK_FORMAT_R16G16B16A16_SFLOAT) {
-        std::puts("DISPLAY_IMAGE_FORMAT differs");
-        ok = false;
-    }
+    // Constant checks are compile-time: a runtime if on constants is C4127 under MSVC /W4.
+    static_assert(vulkan::BUFFER != vulkan::IMAGE);
+    static_assert(DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT);
     // dvv::media_sources is linked as a component library: its providers are registered.
     const auto registry = dvv::ComponentRegistry::create(dvv::Capabilities{});
     const auto sources = registry->list<dvv::media::ISourceProvider>();
