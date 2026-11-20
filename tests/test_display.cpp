@@ -13,6 +13,7 @@
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/display.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 
@@ -100,7 +101,7 @@ TEST_SUITE("display") {
         CHECK(media::displayView(domain) == media::ViewSpec{.format = format,
                                                             .colour = media::displayColour(),
                                                             .layout = media::LayoutPolicy::Any,
-                                                            .api = media::Api::VkImage,
+                                                            .api = media::vulkan::IMAGE,
                                                             .domain = domain,
                                                             .downscaleLog2 = 0});
         CHECK(media::unpackedFormat(format) == format);

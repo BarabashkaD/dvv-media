@@ -1,7 +1,6 @@
 #include "dvv/media/frame_vulkan.h"
 
 #include <cstddef>
-#include <variant>
 
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
@@ -11,7 +10,7 @@ namespace dvv::media::vulkan {
 // No lock and no allocation: the lease's binding owns the resources in 0.2.x.
 template <LeaseKind K>
 gpu::GpuImage* image(const Lease<K>& lease, std::size_t plane) noexcept {
-    const auto* images = std::get_if<VkImageB>(&lease.binding());
+    const auto* images = bindingIf<VkImageB>(lease.binding());
     if (images == nullptr || plane >= images->planeCount || plane >= images->planes.size()) {
         return nullptr;
     }
@@ -20,7 +19,7 @@ gpu::GpuImage* image(const Lease<K>& lease, std::size_t plane) noexcept {
 
 template <LeaseKind K>
 const gpu::GpuBuffer* buffer(const Lease<K>& lease) noexcept {
-    const auto* bound = std::get_if<VkBufferB>(&lease.binding());
+    const auto* bound = bindingIf<VkBufferB>(lease.binding());
     return bound == nullptr ? nullptr : bound->buffer.get();
 }
 

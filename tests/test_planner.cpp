@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "converters.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "planner.h"
@@ -19,6 +20,7 @@
 namespace {
 
 using dvv::media::Api;
+namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
 using dvv::media::FormatId;
@@ -35,7 +37,7 @@ using dvv::media::detail::StateKey;
 using dvv::media::test::FakeConverter;
 
 constexpr StateKey P = dvv::media::detail::PRODUCED;
-constexpr StateKey X{.unpacked = false, .api = Api::VkBuffer, .kind = MemKind::Host};
+constexpr StateKey X{.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::Host};
 constexpr StateKey T{.unpacked = true, .api = Api::HostPlanes, .kind = MemKind::Host};
 
 FakeConverter converter(std::string name, StateKey from, StateKey to, double cost,
@@ -143,11 +145,10 @@ TEST_SUITE("planner") {
 
     TEST_CASE("the last step must give the wanted layout") {
         const FakeConverter q1 = converter("Q1", P, T, 1, Fidelity::Lossless, LayoutPolicy::Tight);
-        const FakeConverter q2 =
-            converter("Q2", P, T, 9, Fidelity::Lossless, LayoutPolicy::VkOptimal);
+        const FakeConverter q2 = converter("Q2", P, T, 9, Fidelity::Lossless, LayoutPolicy::Opaque);
         const std::array<const Converter*, 2> converters{&q1, &q2};
         const std::array<PlanSource, 1> sources{PRODUCE};
-        CHECK(stepsOf(find(sources, converters, T, LayoutPolicy::VkOptimal, 4)) ==
+        CHECK(stepsOf(find(sources, converters, T, LayoutPolicy::Opaque, 4)) ==
               std::vector<const Converter*>{&q2});
         CHECK(stepsOf(find(sources, converters, T, LayoutPolicy::Any, 4)) ==
               std::vector<const Converter*>{&q1});

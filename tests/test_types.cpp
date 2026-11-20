@@ -1,17 +1,22 @@
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
 #include "dvv/base/utf8.h"
+#include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/types.h"
 
 namespace media = dvv::media;
@@ -82,13 +87,43 @@ TEST_CASE("value types compare by every field") {
     CHECK(differs([](media::ViewSpec& spec) { spec.format = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.colour = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.layout = media::LayoutPolicy::Tight; }));
-    CHECK(differs([](media::ViewSpec& spec) { spec.api = media::Api::VkBuffer; }));
+    CHECK(differs([](media::ViewSpec& spec) { spec.api = media::vulkan::BUFFER; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.kind = media::MemKind::HostVisible; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.device = dvv::gpu::DeviceId{1}; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.generation = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.downscaleLog2 = 1; }));
 
     CHECK(media::Rational{.num = 50, .den = 2} != media::Rational{.num = 25, .den = 1});
+}
+
+TEST_CASE("binding kinds: the 1.0.0 spellings name today's values") {
+    static_assert(media::vulkan::BUFFER == media::Api::VkBuffer &&
+                  media::vulkan::IMAGE == media::Api::VkImage);
+    static_assert(std::is_same_v<media::BindingKind, media::Api>);
+    static_assert(media::LayoutPolicy::Opaque == media::LayoutPolicy::VkOptimal);
+}
+
+TEST_CASE("bindingIf returns only its own kind") {
+    CHECK(media::bindingIf<media::VkImageB>(media::Binding{media::HostPlanesB{}}) == nullptr);
+    CHECK(media::bindingIf<media::VkBufferB>(media::Binding{media::HostPlanesB{}}) == nullptr);
+
+    const std::array<std::byte, 6> bytes{};
+    media::HostPlanesB host;
+    host.planes[0] = std::span<const std::byte>(bytes).first(4);
+    host.planes[1] = std::span<const std::byte>(bytes).subspan(4);
+    host.strides[0] = 2;
+    host.strides[1] = 1;
+    host.planeCount = 2;
+    const media::Binding binding{host};
+    const media::HostPlanesB* read = media::bindingIf<media::HostPlanesB>(binding);
+    REQUIRE(read != nullptr);
+    CHECK(read->planeCount == 2);
+    CHECK(read->planes[0].data() == bytes.data());
+    CHECK(read->planes[0].size() == 4);
+    CHECK(read->planes[1].data() == bytes.data() + 4);
+    CHECK(read->planes[1].size() == 2);
+    CHECK(read->strides == host.strides);
+    CHECK(media::bindingIf<media::VkImageB>(binding) == nullptr);
 }
 
 TEST_CASE("colour interning") {

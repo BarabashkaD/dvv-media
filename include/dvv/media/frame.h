@@ -42,7 +42,16 @@ struct VkImageB {
     std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
     std::uint8_t planeCount = 0;
 };
+// Deprecated (removed in 1.0.0): reading a Binding with std::get_if, std::get, std::visit or
+// std::holds_alternative; use bindingIf<B> or Lease::planes(). Binding becomes a class in 1.0.0.
 using Binding = std::variant<HostPlanesB, VkBufferB, VkImageB>;  // + AvFrameB in M4
+
+// The binding as B, or null when it holds another kind. The one way to read a Binding that
+// works in 0.2.x and 1.0.0.
+template <class B>
+[[nodiscard]] const B* bindingIf(const Binding& binding) noexcept {
+    return std::get_if<B>(&binding);
+}
 
 // Spec §6.2.
 class IFrame {
@@ -120,7 +129,7 @@ private:
 };
 
 // The original in a DeviceOnly buffer, padded for the GPU unpack (M2 design §5.4). One native view:
-// (desc.format, desc.colour, Tight, VkBuffer, domain DeviceLocal).
+// (desc.format, desc.colour, Tight, vulkan::BUFFER, domain DeviceLocal).
 // Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkBufferFrame final : public IFrame, public Managed<VkBufferFrame> {
 public:
@@ -140,8 +149,8 @@ private:
 
 // Device images, layout GENERAL: the unpacked planes (D5, one R8_UINT/R16_UINT image per
 // component, colour desc.colour) or the display image (M3 D3, one RGBA16F image, format
-// displayFormat(), colour displayColour()). One native view: (format, colour, VkOptimal, VkImage,
-// domain DeviceLocal).
+// displayFormat(), colour displayColour()). One native view: (format, colour, Opaque,
+// vulkan::IMAGE, domain DeviceLocal).
 // Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkPlanesFrame final : public IFrame, public Managed<VkPlanesFrame> {
 public:

@@ -10,6 +10,7 @@
 #include "dvv/base/task.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/types.h"
 
 namespace dvv::media {
@@ -33,7 +34,7 @@ inline constexpr StateKey PRODUCED{
     .unpacked = false, .api = Api::HostPlanes, .kind = MemKind::Host};
 // What ToDisplay makes: the display image in device memory (displayFormat(), displayColour()).
 inline constexpr StateKey DISPLAY_STATE{
-    .unpacked = false, .api = Api::VkImage, .kind = MemKind::DeviceLocal, .display = true};
+    .unpacked = false, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal, .display = true};
 
 struct ConvertInput {
     const FrameKey& key;     // the key being converted

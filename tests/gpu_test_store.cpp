@@ -119,7 +119,7 @@ struct GpuStore {
 };
 
 const HostPlanesB& hostPlanesOf(const ReadLease& lease) {
-    const auto* planes = std::get_if<HostPlanesB>(&lease.binding());
+    const auto* planes = lease.planes();
     REQUIRE(planes != nullptr);
     return *planes;
 }
@@ -216,8 +216,8 @@ TEST_CASE_FIXTURE(GpuTest,
     REQUIRE(layout.has_value());
     CHECK(test.tierBytes(test.staging) == layout->bytes);  // only the Readback buffer is left
     {
-        const ReadLease buffer =
-            test.take(0, media::originalView(desc, Api::VkBuffer, test.staging), executor());
+        const ReadLease buffer = test.take(
+            0, media::originalView(desc, media::vulkan::BUFFER, test.staging), executor());
         const auto after = store.stats();
         CHECK(after.hits == before.hits + 1);
         CHECK(runsOf(after, "Readback") == runsOf(before, "Readback"));
@@ -231,12 +231,12 @@ TEST_CASE_FIXTURE(GpuTest,
     const auto staged = store.stats();
     {
         const ReadLease planes =
-            test.take(1, media::planesView(desc, Api::VkImage, test.device), executor());
+            test.take(1, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
         const auto after = store.stats();
         CHECK(runsOf(after, "HostToStaging") == runsOf(staged, "HostToStaging") + 1);
         const auto views = media::detail::StoreAccess::views(store, {test.origin, 1});
-        const ViewSpec upload{desc.format,   desc.colour,  LayoutPolicy::Tight,
-                              Api::VkBuffer, test.staging, 0};
+        const ViewSpec upload{desc.format,           desc.colour,  LayoutPolicy::Tight,
+                              media::vulkan::BUFFER, test.staging, 0};
         CHECK(std::ranges::any_of(views, [&](const auto& view) { return view.first == upload; }));
     }
 
@@ -268,7 +268,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
 
     const auto before = store.stats();
     const auto planes = syncWait(store.acquire(
-        {test.origin, 0}, media::planesView(desc, Api::VkImage, test.device), executor()));
+        {test.origin, 0}, media::planesView(desc, media::vulkan::IMAGE, test.device), executor()));
     REQUIRE_MESSAGE(planes.has_value(), planes.error().describe());
     const auto uploaded = store.stats();
     CHECK(runsOf(uploaded, "Upload") == runsOf(before, "Upload") + 1);
@@ -301,7 +301,7 @@ TEST_CASE_FIXTURE(GpuTest,
     CHECK(runsOf(stats, "Upload") == 0);
 
     const ReadLease planes =
-        test.take(0, media::planesView(desc, Api::VkImage, test.device), executor());
+        test.take(0, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
     stats = test.store->stats();
     CHECK(runsOf(stats, "GpuUnpack") == 1);
     const media::PixelFormatDescriptor& format = media::descriptor(id);
@@ -326,7 +326,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffe
     const std::size_t plane_count = format.componentCount;
     REQUIRE(plane_count > 0);
 
-    const ViewSpec planes_view = media::planesView(desc, Api::VkImage, test.device);
+    const ViewSpec planes_view = media::planesView(desc, media::vulkan::IMAGE, test.device);
     const ReadLease lease = test.take(0, planes_view, executor());
     for (std::size_t c = 0; c < plane_count; ++c) {
         const gpu::GpuImage* image = media::vulkan::image(lease, c);
@@ -342,7 +342,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffe
 
     SUBCASE("a VkBuffer acquire resolves its buffer and no image") {
         const ReadLease original =
-            test.take(0, media::originalView(desc, Api::VkBuffer, test.device), executor());
+            test.take(0, media::originalView(desc, media::vulkan::BUFFER, test.device), executor());
         CHECK(media::vulkan::buffer(original) != nullptr);
         CHECK(media::vulkan::image(original, 0) == nullptr);
     }
@@ -374,8 +374,8 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: device-tier eviction frees memory") {
 
     for (std::int64_t index = 0; index < 10; ++index) {
         {
-            const ReadLease planes =
-                test.take(index, media::planesView(desc, Api::VkImage, test.device), executor());
+            const ReadLease planes = test.take(
+                index, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
         }
         CHECK(test.tierBytes(test.device) <= budget);
     }
@@ -399,14 +399,14 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
                                                 .memory = gpu::MemoryUsage::DeviceOnly,
                                                 .name = "unpadded"});
     REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
-    const ViewSpec view{desc.format,   desc.colour, LayoutPolicy::Tight,
-                        Api::VkBuffer, test.device, 0};
+    const ViewSpec view{desc.format,           desc.colour, LayoutPolicy::Tight,
+                        media::vulkan::BUFFER, test.device, 0};
     auto frame = std::make_shared<UnpaddedBufferFrame>(desc, view, std::move(*buffer), *layout);
     const auto adopted = test.store->adopt({test.origin, 0}, std::move(frame));
     REQUIRE_MESSAGE(adopted.has_value(), adopted.error().describe());
 
     const auto planes = syncWait(test.store->acquire(
-        {test.origin, 0}, media::planesView(desc, Api::VkImage, test.device), executor()));
+        {test.origin, 0}, media::planesView(desc, media::vulkan::IMAGE, test.device), executor()));
     REQUIRE_FALSE(planes.has_value());
     CHECK(planes.error().code == Errc::Internal);
 }
@@ -442,7 +442,7 @@ TEST_CASE_FIXTURE(GpuTest,
         const auto frame = media::detail::StoreAccess::makeFrame<media::StagingFrame>(
             *test.store, desc, desc.format, test.staging, buffer, frame_layout, nullptr);
         REQUIRE(frame->nativeViews().size() == 1);
-        CHECK(frame->nativeViews()[0].api == Api::VkBuffer);
+        CHECK(frame->nativeViews()[0].api == media::vulkan::BUFFER);
     }
 
     // With the scope: HostPlanes and VkBuffer, the planes inside the scope's bytes, valid after
@@ -461,9 +461,9 @@ TEST_CASE_FIXTURE(GpuTest,
     REQUIRE(views.size() == 2);
     const auto host_view = std::ranges::find(views, Api::HostPlanes, &ViewSpec::api);
     REQUIRE(host_view != views.end());
-    CHECK(std::ranges::find(views, Api::VkBuffer, &ViewSpec::api) != views.end());
+    CHECK(std::ranges::find(views, media::vulkan::BUFFER, &ViewSpec::api) != views.end());
     const media::Binding binding = frame->bind(*host_view);
-    const auto* planes = std::get_if<HostPlanesB>(&binding);
+    const auto* planes = media::bindingIf<HostPlanesB>(binding);
     REQUIRE(planes != nullptr);
     REQUIRE(planes->planeCount == frame_layout.planeCount);
     REQUIRE(planes->planeCount > 0);

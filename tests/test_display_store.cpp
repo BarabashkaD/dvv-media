@@ -11,6 +11,7 @@
 #include "dvv/base/task.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "packed_source.h"
@@ -23,6 +24,7 @@ using dvv::Errc;
 using dvv::Result;
 using dvv::syncWait;
 using dvv::media::Api;
+namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
 using dvv::media::FrameDesc;
@@ -46,10 +48,11 @@ using dvv::media::test::StoreTest;
 constexpr Domain STAGING{MemKind::HostVisible};
 constexpr Domain DEVICE{MemKind::DeviceLocal};
 constexpr StateKey ON_STAGING{
-    .unpacked = false, .api = Api::VkBuffer, .kind = MemKind::HostVisible};
-constexpr StateKey ON_DEVICE{.unpacked = false, .api = Api::VkBuffer, .kind = MemKind::DeviceLocal};
+    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible};
+constexpr StateKey ON_DEVICE{
+    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::DeviceLocal};
 constexpr StateKey DEVICE_PLANES{
-    .unpacked = true, .api = Api::VkImage, .kind = MemKind::DeviceLocal};
+    .unpacked = true, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal};
 
 bool contains(const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
@@ -79,10 +82,9 @@ struct DisplayChain {
         };
         add("ToStaging", PRODUCED, ON_STAGING, LayoutPolicy::Tight, Fidelity::Exact, 1);
         add("Upload", ON_STAGING, ON_DEVICE, LayoutPolicy::Tight, Fidelity::Exact, 2);
-        add("GpuUnpack", ON_DEVICE, DEVICE_PLANES, LayoutPolicy::VkOptimal, Fidelity::Lossless,
-            0.5);
+        add("GpuUnpack", ON_DEVICE, DEVICE_PLANES, LayoutPolicy::Opaque, Fidelity::Lossless, 0.5);
         if (with_to_display) {
-            add("FakeToDisplay", DEVICE_PLANES, DISPLAY_STATE, LayoutPolicy::VkOptimal,
+            add("FakeToDisplay", DEVICE_PLANES, DISPLAY_STATE, LayoutPolicy::Opaque,
                 Fidelity::Derived, 1);
         }
     }
@@ -120,7 +122,7 @@ TEST_SUITE("store") {
             CHECK(lease->fidelity() == Fidelity::Derived);
             CHECK(lease->view().format == dvv::media::displayFormat());
             CHECK(lease->view().colour == dvv::media::displayColour());
-            CHECK(lease->view().api == Api::VkImage);
+            CHECK(lease->view().api == vulkan::IMAGE);
             CHECK(lease->view().domain == DEVICE);
         }
         CHECK(source->produced.load() == 1);
@@ -177,7 +179,7 @@ TEST_SUITE("store") {
         const ViewSpec planes{.format = dvv::media::unpackedFormat(desc.format),
                               .colour = dvv::media::displayColour(),
                               .layout = LayoutPolicy::Any,
-                              .api = Api::VkImage,
+                              .api = vulkan::IMAGE,
                               .domain = DEVICE};
         const Result<ReadLease> other = syncWait(store->acquire({origin, 0}, planes, *requester));
         REQUIRE_FALSE(other.has_value());

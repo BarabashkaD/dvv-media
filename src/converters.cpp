@@ -42,15 +42,15 @@ namespace {
 constexpr StateKey HOST_ORIGINAL = PRODUCED;
 constexpr StateKey HOST_PLANES{.unpacked = true, .api = Api::HostPlanes, .kind = MemKind::Host};
 constexpr StateKey STAGING_BUFFER{
-    .unpacked = false, .api = Api::VkBuffer, .kind = MemKind::HostVisible};
+    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible};
 constexpr StateKey STAGING_ORIGINAL{
     .unpacked = false, .api = Api::HostPlanes, .kind = MemKind::HostVisible};
 constexpr StateKey STAGING_PLANES{
     .unpacked = true, .api = Api::HostPlanes, .kind = MemKind::HostVisible};
 constexpr StateKey DEVICE_BUFFER{
-    .unpacked = false, .api = Api::VkBuffer, .kind = MemKind::DeviceLocal};
+    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::DeviceLocal};
 constexpr StateKey DEVICE_PLANES{
-    .unpacked = true, .api = Api::VkImage, .kind = MemKind::DeviceLocal};
+    .unpacked = true, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal};
 
 // One edge of the graph. The cost is `factor` times the bytes of the input view.
 struct Edge {
@@ -99,7 +99,7 @@ private:
 [[nodiscard]] Result<std::span<const std::byte>> contiguousOriginal(const ConvertInput& input) {
     const FrameDesc& desc = input.desc;
     DVV_TRY(const FrameGeometry layout, geometry(desc.format, desc.width, desc.height));
-    const auto* planes = std::get_if<HostPlanesB>(&input.binding);
+    const auto* planes = bindingIf<HostPlanesB>(input.binding);
     bool contiguous = planes != nullptr && planes->planeCount == layout.planeCount &&
                       layout.planeCount > 0 && planes->planes[0].data() != nullptr;
     for (std::size_t p = 0; contiguous && p < layout.planeCount; ++p) {
@@ -120,7 +120,7 @@ private:
 
 // The buffer binding of the input; Internal without one.
 [[nodiscard]] Result<VkBufferB> bufferOf(const ConvertInput& input, std::string_view converter) {
-    const auto* binding = std::get_if<VkBufferB>(&input.binding);
+    const auto* binding = bindingIf<VkBufferB>(input.binding);
     if (binding == nullptr || !binding->buffer) {
         return makeError(Errc::Internal, std::format("{}: frame {} of origin {} has no buffer",
                                                      converter, input.key.index, input.key.origin));
@@ -256,7 +256,7 @@ public:
         : EdgeConverter({.name = "GpuUnpack",
                          .from = DEVICE_BUFFER,
                          .to = DEVICE_PLANES,
-                         .layout = LayoutPolicy::VkOptimal,
+                         .layout = LayoutPolicy::Opaque,
                          .fidelity = Fidelity::Lossless,
                          .factor = 0.5}),
           context_(std::move(context)),
@@ -374,7 +374,7 @@ public:
         const FrameDesc& desc = input.desc;
         const FormatId unpacked = unpackedFormat(desc.format);
         const FrameGeometry layout = co_try(geometry(unpacked, desc.width, desc.height));
-        const auto* images = std::get_if<VkImageB>(&input.binding);
+        const auto* images = bindingIf<VkImageB>(input.binding);
         bool matches = images != nullptr && images->planeCount == layout.planeCount;
         for (std::size_t c = 0; matches && c < layout.planeCount; ++c) {
             const gpu::GpuImage* image = images->planes[c].get();
@@ -426,7 +426,7 @@ public:
         : EdgeConverter({.name = "ToDisplay",
                          .from = DEVICE_PLANES,
                          .to = DISPLAY_STATE,
-                         .layout = LayoutPolicy::VkOptimal,
+                         .layout = LayoutPolicy::Opaque,
                          .fidelity = Fidelity::Derived,
                          .factor = 1}),
           context_(std::move(context)),
@@ -437,7 +437,7 @@ public:
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput given,
                                                             ConvertContext context) const override {
         const FrameDesc desc = given.desc;
-        const auto* images = std::get_if<VkImageB>(&given.binding);
+        const auto* images = bindingIf<VkImageB>(given.binding);
         if (images == nullptr) {
             co_return makeError(Errc::Internal,
                                 std::format("ToDisplay: frame {} of origin {} has no planes",

@@ -16,6 +16,7 @@
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "packed_source.h"
@@ -25,6 +26,7 @@ namespace {
 using dvv::Errc;
 using dvv::syncWait;
 using dvv::media::Api;
+namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
 using dvv::media::FormatId;
@@ -81,7 +83,7 @@ std::vector<FrameDesc> descs() {
 }
 
 const HostPlanesB& planesOf(const OriginalRead& read) {
-    const auto* planes = std::get_if<HostPlanesB>(&read.lease().binding());
+    const auto* planes = read.lease().planes();
     REQUIRE(planes != nullptr);
     return *planes;
 }
@@ -103,9 +105,9 @@ TEST_CASE("original read: view helpers") {
                   ViewSpec{dvv::media::unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any,
                            Api::HostPlanes, host, 0});
             const Domain device{MemKind::DeviceLocal, dvv::gpu::DeviceId{0}, 1};
-            CHECK(dvv::media::planesView(desc, Api::VkImage, device) ==
+            CHECK(dvv::media::planesView(desc, vulkan::IMAGE, device) ==
                   ViewSpec{dvv::media::unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any,
-                           Api::VkImage, device, 0});
+                           vulkan::IMAGE, device, 0});
         }
     }
 }

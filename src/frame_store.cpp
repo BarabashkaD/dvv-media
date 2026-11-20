@@ -28,6 +28,7 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
@@ -42,11 +43,16 @@ namespace {
 // The device tier's budget in a store with a fake device domain and deviceBudget 0.
 constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 
-[[nodiscard]] std::string_view apiName(Api api) noexcept {
-    switch (api) {
-        case Api::HostPlanes: return "HostPlanes";
-        case Api::VkBuffer: return "VkBuffer";
-        case Api::VkImage: return "VkImage";
+// A binding kind is compared with == only (types.h).
+[[nodiscard]] std::string_view apiName(BindingKind api) noexcept {
+    if (api == Api::HostPlanes) {
+        return "HostPlanes";
+    }
+    if (api == vulkan::BUFFER) {
+        return "VkBuffer";
+    }
+    if (api == vulkan::IMAGE) {
+        return "VkImage";
     }
     return "?";
 }
@@ -65,7 +71,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
         case LayoutPolicy::Any: return "Any";
         case LayoutPolicy::Tight: return "Tight";
         case LayoutPolicy::RowAlign256: return "RowAlign256";
-        case LayoutPolicy::VkOptimal: return "VkOptimal";
+        case LayoutPolicy::Opaque: return "Opaque";
     }
     return "?";
 }

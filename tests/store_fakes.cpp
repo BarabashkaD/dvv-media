@@ -98,7 +98,7 @@ Task<Result<std::shared_ptr<IFrame>>> FakeConverter::run(detail::ConvertInput in
     if (takeOne(failNext)) {
         co_return makeError(failWith.load(), "fake convert error");
     }
-    const auto* planes = std::get_if<HostPlanesB>(&input.binding);
+    const auto* planes = bindingIf<HostPlanesB>(input.binding);
     if (planes == nullptr || planes->planeCount == 0) {
         co_return makeError(Errc::Internal, "fake converter: the input has no host planes");
     }

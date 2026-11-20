@@ -39,7 +39,12 @@ struct FrameDesc {
     bool operator==(const FrameDesc&) const = default;
 };
 
-enum class Api : std::uint8_t { HostPlanes, VkBuffer, VkImage /*, AvFrame (M4) */ };
+// Deprecated (removed in 1.0.0): Api::VkBuffer and Api::VkImage; use vulkan::BUFFER /
+// vulkan::IMAGE from frame_vulkan.h.
+enum class Api : std::uint8_t { HostPlanes, VkBuffer, VkImage };  // VkBuffer, VkImage deprecated
+// The 1.0.0 name (an open set there); Api stays its alias. Compare with == only: do not switch on
+// it, cast it or hash it; it becomes a class in 1.0.0.
+using BindingKind = Api;
 enum class MemKind : std::uint8_t { Host, HostVisible, DeviceLocal };
 struct Domain {
     MemKind kind = MemKind::Host;
@@ -47,7 +52,14 @@ struct Domain {
     gpu::DeviceGeneration generation{};
     bool operator==(const Domain&) const = default;
 };
-enum class LayoutPolicy : std::uint8_t { Any, Tight, RowAlign256, VkOptimal };
+// Deprecated (removed in 1.0.0): LayoutPolicy::VkOptimal; use Opaque.
+enum class LayoutPolicy : std::uint8_t {
+    Any,
+    Tight,
+    RowAlign256,
+    VkOptimal,           // VkOptimal deprecated
+    Opaque = VkOptimal,  // a backend-defined layout the host does not address
+};
 struct ViewSpec {
     FormatId format = 0;
     ColourId colour = 0;

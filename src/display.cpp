@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "dvv/media/colour_preset.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "format_table.h"
@@ -182,7 +183,7 @@ ViewSpec displayView(const Domain& device_domain) {
     return ViewSpec{.format = displayFormat(),
                     .colour = displayColour(),
                     .layout = LayoutPolicy::Any,
-                    .api = Api::VkImage,
+                    .api = vulkan::IMAGE,
                     .domain = device_domain,
                     .downscaleLog2 = 0};
 }

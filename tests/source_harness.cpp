@@ -84,7 +84,7 @@ dvv::Result<std::vector<std::byte>> SourceHarness::originalBytes(
         auto read = dvv::syncWait(store_->acquireOriginal({origin, index}, media::Api::HostPlanes,
                                                           store_->hostDomain(), *cpu_, true));
         if (read) {
-            const auto* planes = std::get_if<media::HostPlanesB>(&read->lease().binding());
+            const auto* planes = read->lease().planes();
             REQUIRE(planes != nullptr);
             std::vector<std::byte> copy;
             for (std::size_t p = 0; p < planes->planeCount; ++p) {

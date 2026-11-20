@@ -12,6 +12,7 @@
 
 #include "dvv/gpu/resources.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 
 namespace dvv::media {
@@ -111,7 +112,7 @@ StagingFrame::StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId
       buffer_(std::move(buffer)),
       geometry_(geometry),
       host_read_(std::move(host_read)) {
-    const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, Api::VkBuffer, domain, 0};
+    const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0};
     if (buffer_ && host_read_ && buffer_->desc().memory == gpu::MemoryUsage::HostReadback) {
         ViewSpec host_view = buffer_view;
         host_view.api = Api::HostPlanes;
@@ -130,7 +131,7 @@ Binding StagingFrame::bind(const ViewSpec& native) const {
     if (std::ranges::find(nativeViews(), native) == nativeViews().end()) {
         return HostPlanesB{};
     }
-    if (native.api == Api::VkBuffer) {
+    if (native.api == vulkan::BUFFER) {
         return VkBufferB{.buffer = buffer_, .offset = 0, .geometry = geometry_};
     }
     HostPlanesB planes;
@@ -159,7 +160,7 @@ VkBufferFrame::VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain
                              FrameGeometry geometry) noexcept
     : Managed<VkBufferFrame>(std::move(key)),
       desc_(desc),
-      view_{desc.format, desc.colour, LayoutPolicy::Tight, Api::VkBuffer, domain, 0},
+      view_{desc.format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0},
       buffer_(std::move(buffer)),
       geometry_(geometry) {}
 
@@ -186,7 +187,7 @@ VkPlanesFrame::VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, Format
                              std::uint8_t plane_count) noexcept
     : Managed<VkPlanesFrame>(std::move(key)),
       desc_(desc),
-      view_{format, colour, LayoutPolicy::VkOptimal, Api::VkImage, domain, 0},
+      view_{format, colour, LayoutPolicy::Opaque, vulkan::IMAGE, domain, 0},
       planes_{.planes = std::move(planes), .planeCount = plane_count} {
     try {
         if (const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height)) {
