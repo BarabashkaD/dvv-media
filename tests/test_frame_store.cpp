@@ -12,6 +12,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -49,6 +50,7 @@ using dvv::media::FrameKey;
 using dvv::media::FrameStore;
 using dvv::media::HostPlanesB;
 using dvv::media::LayoutPolicy;
+using dvv::media::Lease;
 using dvv::media::LeaseKind;
 using dvv::media::MemKind;
 using dvv::media::OriginId;
@@ -70,8 +72,8 @@ using dvv::media::test::waitUntil;
 using dvv::test::TestAuthority;
 
 // The host planes of a lease (REQUIREs that the binding holds them).
-template <class Lease>
-const HostPlanesB& planesOf(const Lease& lease) {
+template <LeaseKind K>
+const HostPlanesB& planesOf(const Lease<K>& lease) {
     const auto* planes = std::get_if<HostPlanesB>(&lease.binding());
     REQUIRE(planes != nullptr);
     return *planes;
@@ -177,6 +179,14 @@ ViewSpec viewOf(FormatId format, Api api, Domain domain) {
 }  // namespace
 
 TEST_SUITE("store") {
+    TEST_CASE("lease template: the aliases are the template") {
+        static_assert(std::is_same_v<ReadLease, Lease<LeaseKind::Read>>);
+        static_assert(std::is_same_v<PinLease, Lease<LeaseKind::Pin>>);
+        static_assert(!std::is_copy_constructible_v<ReadLease> &&
+                      std::is_nothrow_move_constructible_v<PinLease>);
+        static_assert(ReadLease::KIND == LeaseKind::Read && PinLease::KIND == LeaseKind::Pin);
+    }
+
     TEST_CASE_FIXTURE(StoreTest, "acquire produces the original once and then hits") {
         const auto store = makeStore();
         const auto source = makeSource(4);

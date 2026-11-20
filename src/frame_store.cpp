@@ -196,9 +196,11 @@ Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
 
 // ---- Leases ----
 
-ReadLease::ReadLease(ReadLease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
+template <LeaseKind K>
+Lease<K>::Lease(Lease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
 
-ReadLease& ReadLease::operator=(ReadLease&& other) noexcept {
+template <LeaseKind K>
+Lease<K>& Lease<K>::operator=(Lease&& other) noexcept {
     if (this != &other) {
         reset();
         core_ = std::exchange(other.core_, {});
@@ -206,11 +208,13 @@ ReadLease& ReadLease::operator=(ReadLease&& other) noexcept {
     return *this;
 }
 
-ReadLease::~ReadLease() {
+template <LeaseKind K>
+Lease<K>::~Lease() {
     reset();
 }
 
-void ReadLease::reset() noexcept {
+template <LeaseKind K>
+void Lease<K>::reset() noexcept {
     if (core_.store) {
         core_.store->releaseLease(core_);
     }
@@ -219,54 +223,26 @@ void ReadLease::reset() noexcept {
     core_.store.reset();  // last: may destroy the store
 }
 
-const FrameKey& ReadLease::key() const noexcept {
+template <LeaseKind K>
+const FrameKey& Lease<K>::key() const noexcept {
     return core_.entry->key;
 }
-const FrameDesc& ReadLease::desc() const noexcept {
+template <LeaseKind K>
+const FrameDesc& Lease<K>::desc() const noexcept {
     return core_.entry->desc;
 }
-Fidelity ReadLease::fidelity() const noexcept {
+template <LeaseKind K>
+Fidelity Lease<K>::fidelity() const noexcept {
     return core_.entry->fidelity;
 }
-SyncPoint ReadLease::ready() const noexcept {
+template <LeaseKind K>
+SyncPoint Lease<K>::ready() const noexcept {
     return core_.entry->ready;
 }
 
-PinLease::PinLease(PinLease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
-
-PinLease& PinLease::operator=(PinLease&& other) noexcept {
-    if (this != &other) {
-        reset();
-        core_ = std::exchange(other.core_, {});
-    }
-    return *this;
-}
-
-PinLease::~PinLease() {
-    reset();
-}
-
-void PinLease::reset() noexcept {
-    if (core_.store) {
-        core_.store->releaseLease(core_);
-    }
-    core_.binding = {};
-    core_.entry.reset();  // may free the frame: after unlocking
-    core_.store.reset();  // last: may destroy the store
-}
-
-const FrameKey& PinLease::key() const noexcept {
-    return core_.entry->key;
-}
-const FrameDesc& PinLease::desc() const noexcept {
-    return core_.entry->desc;
-}
-Fidelity PinLease::fidelity() const noexcept {
-    return core_.entry->fidelity;
-}
-SyncPoint PinLease::ready() const noexcept {
-    return core_.entry->ready;
-}
+// Every member defined outside the class is defined above these lines (MSVC C4661).
+template class Lease<LeaseKind::Read>;
+template class Lease<LeaseKind::Pin>;
 
 // ---- Creation ----
 

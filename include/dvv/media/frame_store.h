@@ -37,7 +37,7 @@ struct Plan;
 struct Prepared;
 struct Record;
 class Converter;
-// What ReadLease and PinLease hold (§5.2: the store and the entry).
+// What a Lease holds (§5.2: the store and the entry).
 struct LeaseCore {
     std::shared_ptr<FrameStore> store;
     std::shared_ptr<Entry> entry;
@@ -48,15 +48,18 @@ struct LeaseCore {
 };
 }  // namespace detail
 
-// Move-only handle; keeps the view alive.
-class ReadLease {
+// A move-only handle that keeps one view of one store entry alive. Read leases count as readers,
+// pin leases as pins; the destructor releases under the store mutex (binding, entry, store last).
+template <LeaseKind K>
+class Lease {
 public:
-    ReadLease() = default;
-    ReadLease(ReadLease&& other) noexcept;
-    ReadLease& operator=(ReadLease&& other) noexcept;
-    ReadLease(const ReadLease&) = delete;
-    ReadLease& operator=(const ReadLease&) = delete;
-    ~ReadLease();  // under the store mutex: readers-- and LRU touch (§5.2)
+    static constexpr LeaseKind KIND = K;
+    Lease() = default;
+    Lease(Lease&& other) noexcept;
+    Lease& operator=(Lease&& other) noexcept;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+    ~Lease();
     [[nodiscard]] explicit operator bool() const noexcept { return core_.entry != nullptr; }
     // Valid leases only:
     [[nodiscard]] const FrameKey& key() const noexcept;
@@ -68,35 +71,14 @@ public:
 
 private:
     friend class FrameStore;
-    explicit ReadLease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
+    explicit Lease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
     void reset() noexcept;
     detail::LeaseCore core_;
 };
-
-// The same shape and accessors as ReadLease; counts as a pin, not a reader.
-class PinLease {
-public:
-    PinLease() = default;
-    PinLease(PinLease&& other) noexcept;
-    PinLease& operator=(PinLease&& other) noexcept;
-    PinLease(const PinLease&) = delete;
-    PinLease& operator=(const PinLease&) = delete;
-    ~PinLease();  // under the store mutex: pins-- and LRU touch (§5.2)
-    [[nodiscard]] explicit operator bool() const noexcept { return core_.entry != nullptr; }
-    // Valid leases only:
-    [[nodiscard]] const FrameKey& key() const noexcept;
-    [[nodiscard]] const FrameDesc& desc() const noexcept;
-    [[nodiscard]] const ViewSpec& view() const noexcept { return core_.view; }
-    [[nodiscard]] Fidelity fidelity() const noexcept;
-    [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
-    [[nodiscard]] SyncPoint ready() const noexcept;  // M2: always reached (D10)
-
-private:
-    friend class FrameStore;
-    explicit PinLease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
-    void reset() noexcept;
-    detail::LeaseCore core_;
-};
+using ReadLease = Lease<LeaseKind::Read>;
+using PinLease = Lease<LeaseKind::Pin>;
+extern template class Lease<LeaseKind::Read>;
+extern template class Lease<LeaseKind::Pin>;
 
 // A read of a key's original (§6.6): only FrameStore::acquireOriginal makes one.
 class OriginalRead {
@@ -184,8 +166,8 @@ public:
     void trim(Domain domain, std::size_t target_bytes);
 
 private:
-    friend class ReadLease;
-    friend class PinLease;
+    template <LeaseKind>
+    friend class Lease;
     friend class ProduceContext;
     friend struct detail::StoreAccess;
 
