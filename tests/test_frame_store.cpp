@@ -700,6 +700,17 @@ TEST_SUITE("store") {
         CHECK(store->stats().pins == 0);
     }
 
+    TEST_CASE_FIXTURE(StoreTest, "planes() is the host binding or null") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        REQUIRE(lease.planes() != nullptr);
+        CHECK(lease.planes() == std::get_if<HostPlanesB>(&lease.binding()));
+        CHECK(ReadLease{}.planes() == nullptr);
+        CHECK(PinLease{}.planes() == nullptr);
+    }
+
     TEST_CASE_FIXTURE(StoreTest, "a share outlives detach") {
         const auto store = makeStore();
         const auto source = makeSource();

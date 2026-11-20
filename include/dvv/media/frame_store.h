@@ -67,6 +67,9 @@ public:
     [[nodiscard]] const ViewSpec& view() const noexcept { return core_.view; }
     [[nodiscard]] Fidelity fidelity() const noexcept;
     [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
+    // The host planes of a HostPlanes binding; null for an empty lease or another binding. Valid
+    // while this lease (or a share of it) lives.
+    [[nodiscard]] const HostPlanesB* planes() const noexcept;
     [[nodiscard]] SyncPoint ready() const noexcept;  // M2: always reached (D10)
     // A second lease on the same entry and view, counted like any lease (one more reader for Read,
     // one more pin for Pin) and listed in outstandingLeases() with `where`. Takes the store mutex.

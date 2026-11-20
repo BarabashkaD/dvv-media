@@ -14,7 +14,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -29,6 +28,7 @@
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/types.h"
@@ -123,11 +123,10 @@ struct DisplayStore {
 
 // The display image of a lease (REQUIREs one image).
 gpu::GpuImage& displayImageOf(const ReadLease& lease) {
-    const auto* images = std::get_if<media::VkImageB>(&lease.binding());
-    REQUIRE(images != nullptr);
-    REQUIRE(images->planeCount == 1);
-    REQUIRE(images->planes[0] != nullptr);
-    return *images->planes[0];
+    gpu::GpuImage* image = media::vulkan::image(lease, 0);
+    REQUIRE(image != nullptr);
+    REQUIRE(media::vulkan::image(lease, 1) == nullptr);
+    return *image;
 }
 
 // The half floats of an RGBA16F image, read back in one submission.

@@ -5,6 +5,7 @@ add_executable(dvv_media_tests
     source_harness.cpp
     neutral_headers/display_h.cpp
     neutral_headers/frame_store_h.cpp
+    neutral_headers/frame_vulkan_h.cpp
     neutral_headers/pixel_format_h.cpp
     neutral_headers/source_h.cpp
     neutral_headers/types_h.cpp

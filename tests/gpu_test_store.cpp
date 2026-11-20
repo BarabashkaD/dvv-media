@@ -22,6 +22,7 @@
 #include "dvv/gpu/resources.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "gpu_fixture.h"
@@ -221,10 +222,9 @@ TEST_CASE_FIXTURE(GpuTest,
         CHECK(after.hits == before.hits + 1);
         CHECK(runsOf(after, "Readback") == runsOf(before, "Readback"));
         CHECK(runsOf(after, "HostToStaging") == runsOf(before, "HostToStaging"));
-        const auto* binding = std::get_if<media::VkBufferB>(&buffer.binding());
-        REQUIRE(binding != nullptr);
-        REQUIRE(binding->buffer != nullptr);
-        CHECK(binding->buffer->desc().memory == gpu::MemoryUsage::HostReadback);
+        const gpu::GpuBuffer* resolved = media::vulkan::buffer(buffer);
+        REQUIRE(resolved != nullptr);
+        CHECK(resolved->desc().memory == gpu::MemoryUsage::HostReadback);
     }
 
     // 2. A new key's device planes go through a HostUpload staging.
@@ -304,12 +304,10 @@ TEST_CASE_FIXTURE(GpuTest,
         test.take(0, media::planesView(desc, Api::VkImage, test.device), executor());
     stats = test.store->stats();
     CHECK(runsOf(stats, "GpuUnpack") == 1);
-    const auto* images = std::get_if<media::VkImageB>(&planes.binding());
-    REQUIRE(images != nullptr);
     const media::PixelFormatDescriptor& format = media::descriptor(id);
-    REQUIRE(images->planeCount == format.componentCount);
-    for (std::size_t c = 0; c < images->planeCount; ++c) {
-        const gpu::GpuImage* image = images->planes[c].get();
+    CHECK(media::vulkan::image(planes, format.componentCount) == nullptr);
+    for (std::size_t c = 0; c < format.componentCount; ++c) {
+        const gpu::GpuImage* image = media::vulkan::image(planes, c);
         REQUIRE(image != nullptr);
         const auto [w, h] = media::componentSize(id, c, desc.width, desc.height);
         CHECK(gpu::vulkanFormat(*image) == VK_FORMAT_R16_UINT);
@@ -317,6 +315,48 @@ TEST_CASE_FIXTURE(GpuTest,
         CHECK(image->height() == h);
         CHECK(gpu::vulkanLayout(*image) == VK_IMAGE_LAYOUT_GENERAL);
         CHECK(gpu::vulkanView(*image) != VK_NULL_HANDLE);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffer") {
+    const FormatId id = idOf("yuv420p10le");
+    const FrameDesc desc{.format = id, .colour = 0, .width = 34, .height = 17};
+    const GpuStore test(*this, desc, 3);
+    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const std::size_t plane_count = format.componentCount;
+    REQUIRE(plane_count > 0);
+
+    const ViewSpec planes_view = media::planesView(desc, Api::VkImage, test.device);
+    const ReadLease lease = test.take(0, planes_view, executor());
+    for (std::size_t c = 0; c < plane_count; ++c) {
+        const gpu::GpuImage* image = media::vulkan::image(lease, c);
+        REQUIRE(image != nullptr);
+        const auto [w, h] = media::componentSize(id, c, desc.width, desc.height);
+        CHECK(image->width() == w);
+        CHECK(image->height() == h);
+        CHECK(gpu::vulkanFormat(*image) ==
+              media::detail::unpackedImageFormat(format.components[c]));
+    }
+    CHECK(media::vulkan::image(lease, plane_count) == nullptr);
+    CHECK(media::vulkan::buffer(lease) == nullptr);
+
+    SUBCASE("a VkBuffer acquire resolves its buffer and no image") {
+        const ReadLease original =
+            test.take(0, media::originalView(desc, Api::VkBuffer, test.device), executor());
+        CHECK(media::vulkan::buffer(original) != nullptr);
+        CHECK(media::vulkan::image(original, 0) == nullptr);
+    }
+
+    SUBCASE("a pin of the same view resolves the same images") {
+        const dvv::Result<media::PinLease> pin =
+            syncWait(test.store->pin({test.origin, 0}, planes_view, executor()));
+        REQUIRE_MESSAGE(pin.has_value(), pin.error().describe());
+        if (pin) {
+            for (std::size_t c = 0; c < plane_count; ++c) {
+                CHECK(media::vulkan::image(*pin, c) == media::vulkan::image(lease, c));
+            }
+            CHECK(media::vulkan::buffer(*pin) == nullptr);
+        }
     }
 }
 

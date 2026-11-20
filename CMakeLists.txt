@@ -36,6 +36,7 @@ add_library(dvv_media STATIC
     src/file_name.cpp
     src/format_json.cpp
     src/frame_store.cpp
+    src/frame_vulkan.cpp
     src/frames.cpp
     src/gpu_unpack.cpp
     src/patterns.cpp

@@ -28,13 +28,17 @@ struct HostPlanesB {
     std::uint8_t planeCount = 0;
 };
 // The whole original in one buffer, tight.
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 struct VkBufferB {
+    // Deprecated (removed in 1.0.0): use vulkan::buffer(lease) (frame_vulkan.h).
     std::shared_ptr<gpu::GpuBuffer> buffer;
     std::uint64_t offset = 0;
     FrameGeometry geometry{};
 };
 // One image per unpacked component, layout GENERAL.
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 struct VkImageB {
+    // Deprecated (removed in 1.0.0): use vulkan::image(lease, plane) (frame_vulkan.h).
     std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
     std::uint8_t planeCount = 0;
 };
@@ -86,6 +90,7 @@ private:
 //   bytes (one store entry, counted once); without a scope: VkBuffer only (no empty planes);
 // - HostUpload memory (made by HostToStaging): VkBuffer only (the CPU never reads write-combined
 //   memory).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class StagingFrame final : public IFrame, public Managed<StagingFrame> {
 public:
     // `host_read`: the read scope of `buffer` for HostReadback memory (made by mapRead() after
@@ -97,6 +102,7 @@ public:
     ~StagingFrame() override;                                           // frames.cpp
     // Both are defined in frames.cpp, where MappedRead is complete: destroying the by-value
     // parameter and the member needs the complete type.
+    // Deprecated (removed in 1.0.0): use vulkan::buffer(lease) (frame_vulkan.h).
     [[nodiscard]] const std::shared_ptr<gpu::GpuBuffer>& buffer() const noexcept { return buffer_; }
     [[nodiscard]] const FrameDesc& desc() const noexcept override { return desc_; }
     [[nodiscard]] std::span<const ViewSpec> nativeViews() const noexcept override;
@@ -115,6 +121,7 @@ private:
 
 // The original in a DeviceOnly buffer, padded for the GPU unpack (M2 design §5.4). One native view:
 // (desc.format, desc.colour, Tight, VkBuffer, domain DeviceLocal).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkBufferFrame final : public IFrame, public Managed<VkBufferFrame> {
 public:
     VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain domain,
@@ -135,6 +142,7 @@ private:
 // component, colour desc.colour) or the display image (M3 D3, one RGBA16F image, format
 // displayFormat(), colour displayColour()). One native view: (format, colour, VkOptimal, VkImage,
 // domain DeviceLocal).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkPlanesFrame final : public IFrame, public Managed<VkPlanesFrame> {
 public:
     VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format, ColourId colour,

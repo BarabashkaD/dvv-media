@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "converters.h"
@@ -238,6 +239,11 @@ Fidelity Lease<K>::fidelity() const noexcept {
 template <LeaseKind K>
 SyncPoint Lease<K>::ready() const noexcept {
     return core_.entry->ready;
+}
+template <LeaseKind K>
+const HostPlanesB* Lease<K>::planes() const noexcept {
+    // An empty lease holds a default Binding, which is an empty HostPlanesB.
+    return *this ? std::get_if<HostPlanesB>(&core_.binding) : nullptr;
 }
 template <LeaseKind K>
 Lease<K> Lease<K>::share(std::source_location where) const {
