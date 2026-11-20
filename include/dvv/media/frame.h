@@ -12,14 +12,10 @@
 #include <variant>
 
 #include "dvv/base/lifetime.h"
+#include "dvv/gpu/gpu_fwd.h"  // GpuBuffer, GpuImage, MappedRead; includes nothing
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/aligned_buffer.h"
-
-namespace dvv::gpu {
-class GpuBuffer;
-class GpuImage;
-}  // namespace dvv::gpu
 
 namespace dvv::media {
 
@@ -86,14 +82,21 @@ private:
 
 // A frame in one host-visible GpuBuffer holding the tight layout of `format` (desc.format or
 // unpackedFormat(desc.format)) at offset 0. Native views (format, desc.colour, Tight, domain):
-// - HostReadback memory (made by Readback): HostPlanes and VkBuffer, the same bytes (one store
-//   entry, counted once);
+// - HostReadback memory (made by Readback) with its read scope: HostPlanes and VkBuffer, the same
+//   bytes (one store entry, counted once); without a scope: VkBuffer only (no empty planes);
 // - HostUpload memory (made by HostToStaging): VkBuffer only (the CPU never reads write-combined
 //   memory).
 class StagingFrame final : public IFrame, public Managed<StagingFrame> {
 public:
+    // `host_read`: the read scope of `buffer` for HostReadback memory (made by mapRead() after
+    // the GPU copy completed); null for HostUpload memory. The HostPlanes view is offered only
+    // when it is set.
     StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format, Domain domain,
-                 std::shared_ptr<gpu::GpuBuffer> buffer, FrameGeometry geometry) noexcept;
+                 std::shared_ptr<gpu::GpuBuffer> buffer, FrameGeometry geometry,
+                 std::unique_ptr<gpu::MappedRead> host_read) noexcept;  // frames.cpp
+    ~StagingFrame() override;                                           // frames.cpp
+    // Both are defined in frames.cpp, where MappedRead is complete: destroying the by-value
+    // parameter and the member needs the complete type.
     [[nodiscard]] const std::shared_ptr<gpu::GpuBuffer>& buffer() const noexcept { return buffer_; }
     [[nodiscard]] const FrameDesc& desc() const noexcept override { return desc_; }
     [[nodiscard]] std::span<const ViewSpec> nativeViews() const noexcept override;
@@ -106,6 +109,8 @@ private:
     FrameGeometry geometry_;
     std::array<ViewSpec, 2> views_{};
     std::uint8_t view_count_ = 0;
+    // A scope of buffer_: declared after it, so it is destroyed first.
+    std::unique_ptr<gpu::MappedRead> host_read_;
 };
 
 // The original in a DeviceOnly buffer, padded for the GPU unpack (M2 design §5.4). One native view:

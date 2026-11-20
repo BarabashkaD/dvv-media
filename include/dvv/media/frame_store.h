@@ -17,13 +17,10 @@
 #include "dvv/base/executor.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
+#include "dvv/gpu/gpu_fwd.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
-
-namespace dvv::gpu {
-class ExecutionContext;
-}  // namespace dvv::gpu
 
 namespace dvv::media {
 

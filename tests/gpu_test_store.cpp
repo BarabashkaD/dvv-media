@@ -192,6 +192,10 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: requireExact via staging returns the orig
             CHECK(runsOf(stats, "Upload") == 1);
             CHECK(runsOf(stats, "Readback") == 1);
             CHECK(runsOf(stats, "GpuUnpack") == 0);
+            // The lease keeps its entry: its planes stay valid and equal after the trims.
+            test.store->trim(test.staging, 0);
+            test.store->trim(test.device, 0);
+            CHECK(concatenated(hostPlanesOf(read->lease())) == *expected);
         }
     }
 }
@@ -365,4 +369,74 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
         {test.origin, 0}, media::planesView(desc, Api::VkImage, test.device), executor()));
     REQUIRE_FALSE(planes.has_value());
     CHECK(planes.error().code == Errc::Internal);
+}
+
+TEST_CASE_FIXTURE(GpuTest,
+                  "store gpu: a readback staging frame offers host planes only with its read "
+                  "scope") {
+    const FormatId id = idOf("yuv420p10le");
+    const FrameDesc desc{.format = id, .colour = 0, .width = 33, .height = 17};
+    const GpuStore test(*this, desc, 1);
+    const auto layout = media::geometry(id, desc.width, desc.height);
+    REQUIRE(layout.has_value());
+    const media::FrameGeometry frame_layout = *layout;
+    auto made = gpu::createBuffer(context(), {.size = frame_layout.bytes,
+                                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                              .memory = gpu::MemoryUsage::HostReadback,
+                                              .name = "readback"});
+    REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+    std::shared_ptr<gpu::GpuBuffer> buffer = std::move(*made);
+    {
+        // A byte pattern, so the planes compare against known bytes.
+        gpu::MappedWrite write = buffer->mapWrite();
+        const std::span<std::byte> bytes = write.bytes();
+        REQUIRE(bytes.size() >= frame_layout.bytes);
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            bytes[i] = static_cast<std::byte>(((i * 7U) + 1U) & 0xFFU);
+        }
+        REQUIRE(write.flush().has_value());
+    }
+
+    // Without a scope: the VkBuffer view only, no empty planes.
+    {
+        const auto frame = media::detail::StoreAccess::makeFrame<media::StagingFrame>(
+            *test.store, desc, desc.format, test.staging, buffer, frame_layout, nullptr);
+        REQUIRE(frame->nativeViews().size() == 1);
+        CHECK(frame->nativeViews()[0].api == Api::VkBuffer);
+    }
+
+    // With the scope: HostPlanes and VkBuffer, the planes inside the scope's bytes, valid after
+    // the buffer's other holders dropped.
+    auto read = buffer->mapRead();
+    REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+    const std::span<const std::byte> scope = read->bytes();
+    REQUIRE(scope.size() >= frame_layout.bytes);
+    const std::byte* base = scope.data();
+    const std::vector<std::byte> expected(scope.begin(), scope.end());
+    auto frame = media::detail::StoreAccess::makeFrame<media::StagingFrame>(
+        *test.store, desc, desc.format, test.staging, buffer, frame_layout,
+        std::make_unique<gpu::MappedRead>(std::move(*read)));
+    buffer.reset();  // the frame is the buffer's only holder
+    const std::span<const ViewSpec> views = frame->nativeViews();
+    REQUIRE(views.size() == 2);
+    const auto host_view = std::ranges::find(views, Api::HostPlanes, &ViewSpec::api);
+    REQUIRE(host_view != views.end());
+    CHECK(std::ranges::find(views, Api::VkBuffer, &ViewSpec::api) != views.end());
+    const media::Binding binding = frame->bind(*host_view);
+    const auto* planes = std::get_if<HostPlanesB>(&binding);
+    REQUIRE(planes != nullptr);
+    REQUIRE(planes->planeCount == frame_layout.planeCount);
+    REQUIRE(planes->planeCount > 0);
+    CHECK(planes->planes[0].data() ==
+          base + static_cast<std::size_t>(frame_layout.planes[0].offset));
+    for (std::size_t p = 0; p < planes->planeCount; ++p) {
+        const std::span<const std::byte> plane = planes->planes[p];
+        const auto start = plane.data() - base;
+        REQUIRE(start >= 0);
+        REQUIRE(static_cast<std::size_t>(start) + plane.size() <= frame_layout.bytes);
+        const auto offset = static_cast<std::size_t>(frame_layout.planes[p].offset);
+        CHECK(static_cast<std::size_t>(start) == offset);
+        CHECK(std::ranges::equal(plane, std::span(expected).subspan(offset, plane.size())));
+    }
+    frame.reset();  // the scope is destroyed before the buffer (member order)
 }

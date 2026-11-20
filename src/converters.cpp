@@ -181,19 +181,23 @@ public:
                                                  .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                  .memory = gpu::MemoryUsage::HostUpload,
                                                  .name = frameName("staging", input.key)}));
-        const std::span<std::byte> mapped = buffer->mapped();
-        if (mapped.size() < size) {
-            co_return makeError(
-                Errc::Internal,
-                std::format("HostToStaging: buffer '{}' is not mapped", buffer->desc().name));
+        {
+            gpu::MappedWrite w = buffer->mapWrite();
+            const std::span<std::byte> mapped = w.bytes();
+            if (mapped.size() < size) {
+                co_return makeError(
+                    Errc::Internal,
+                    std::format("HostToStaging: buffer '{}' is not mapped", buffer->desc().name));
+            }
+            // Sequential writes only (write-combined memory): the original, then the zero padding.
+            std::memcpy(mapped.data(), original.data(), original.size());
+            std::memset(mapped.data() + original.size(), 0,
+                        static_cast<std::size_t>(size) - original.size());
+            co_try(w.flush());
         }
-        // Sequential writes only (write-combined memory): the original, then the zero padding.
-        std::memcpy(mapped.data(), original.data(), original.size());
-        std::memset(mapped.data() + original.size(), 0,
-                    static_cast<std::size_t>(size) - original.size());
-        co_try(buffer->flush());
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<StagingFrame>(
-            context.store, desc, desc.format, context.output.domain, std::move(buffer), layout));
+            context.store, desc, desc.format, context.output.domain, std::move(buffer), layout,
+            nullptr));
     }
 
 private:
@@ -339,9 +343,10 @@ public:
                     gpu::BufferCopy{
                         .sourceOffset = source.offset, .destinationOffset = 0, .size = bytes});
             }));
-        co_try(host->invalidate());
+        gpu::MappedRead read = co_try(host->mapRead());
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<StagingFrame>(
-            context.store, desc, desc.format, context.output.domain, std::move(host), layout));
+            context.store, desc, desc.format, context.output.domain, std::move(host), layout,
+            std::make_unique<gpu::MappedRead>(std::move(read))));
     }
 
 private:
@@ -399,9 +404,10 @@ public:
                     recorder.copyImageToBuffer(*planes.planes[c], *host, layout.planes[c].offset);
                 }
             }));
-        co_try(host->invalidate());
+        gpu::MappedRead read = co_try(host->mapRead());
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<StagingFrame>(
-            context.store, desc, unpacked, context.output.domain, std::move(host), layout));
+            context.store, desc, unpacked, context.output.domain, std::move(host), layout,
+            std::make_unique<gpu::MappedRead>(std::move(read))));
     }
 
 private:

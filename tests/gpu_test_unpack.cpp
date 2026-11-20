@@ -127,11 +127,14 @@ UnpackCase prepareCase(gpu::ExecutionContext& context, media::FormatId id, std::
     const std::uint64_t size = detail::unpackBufferBytes(offset, frame->bytes);
     unpack.staging = makeBuffer(context, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                 gpu::MemoryUsage::HostUpload, "staging");
-    const std::span<std::byte> mapped = unpack.staging->mapped();
-    REQUIRE(mapped.size() >= size);
-    std::memset(mapped.data(), 0, size);
-    std::memcpy(mapped.data() + offset, bytes->data(), bytes->size());
-    REQUIRE(unpack.staging->flush().has_value());
+    {
+        gpu::MappedWrite write = unpack.staging->mapWrite();
+        const std::span<std::byte> mapped = write.bytes();
+        REQUIRE(mapped.size() >= size);
+        std::memset(mapped.data(), 0, size);
+        std::memcpy(mapped.data() + offset, bytes->data(), bytes->size());
+        REQUIRE(write.flush().has_value());
+    }
     unpack.device = frameBuffer(context, size);
 
     for (std::size_t c = 0; c < format.componentCount; ++c) {
@@ -152,8 +155,9 @@ void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& u
     for (std::size_t c = 0; c < unpack.images.size(); ++c) {
         const gpu::GpuImage& image = *unpack.images[c];
         gpu::GpuBuffer& readback = *unpack.readbacks[c];
-        REQUIRE(readback.invalidate().has_value());
-        const std::span<const std::byte> texels = readback.mapped();
+        const auto read = readback.mapRead();
+        REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+        const std::span<const std::byte> texels = read->bytes();
         const bool wide = gpu::vulkanFormat(image) == VK_FORMAT_R16_UINT;
         const std::vector<std::uint16_t>& expected = unpack.values.components[c];
         REQUIRE(expected.size() == std::size_t{image.width()} * image.height());

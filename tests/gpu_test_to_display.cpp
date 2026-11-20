@@ -142,8 +142,9 @@ std::vector<std::uint16_t> readHalves(GpuTest& test, gpu::GpuImage& image) {
     const auto submitted = test.submitAndWait(
         [&](gpu::CommandRecorder& recorder) { recorder.copyImageToBuffer(image, *readback); });
     REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
-    REQUIRE(readback->invalidate().has_value());
-    const std::span<const std::byte> mapped = readback->mapped();
+    const auto read = readback->mapRead();
+    REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+    const std::span<const std::byte> mapped = read->bytes();
     REQUIRE(mapped.size() >= bytes);
     std::vector<std::uint16_t> halves(static_cast<std::size_t>(bytes / 2));
     std::memcpy(halves.data(), mapped.data(), static_cast<std::size_t>(bytes));
