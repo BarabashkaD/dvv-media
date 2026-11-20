@@ -26,6 +26,7 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
 #include "dvv/media/frame_vulkan.h"
@@ -41,6 +42,8 @@
 namespace media = dvv::media;
 namespace detail = dvv::media::detail;
 namespace gpu = dvv::gpu;
+
+static_assert(media::DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT);
 using dvv::Errc;
 using dvv::syncWait;
 using media::ColourMatrix;
@@ -337,7 +340,7 @@ TEST_CASE_FIXTURE(GpuTest, "the display path runs every converter once and then 
         CHECK(lease->view().format == media::displayFormat());
         CHECK(lease->view().colour == media::displayColour());
         const gpu::GpuImage& image = displayImageOf(*lease);
-        CHECK(gpu::vulkanFormat(image) == VK_FORMAT_R16G16B16A16_SFLOAT);
+        CHECK(gpu::vulkanFormat(image) == media::DISPLAY_IMAGE_FORMAT);
         CHECK(image.width() == 33);
         CHECK(image.height() == 17);
         CHECK(gpu::vulkanLayout(image) == VK_IMAGE_LAYOUT_GENERAL);
@@ -392,7 +395,7 @@ TEST_CASE_FIXTURE(GpuTest, "recordToDisplay checks its images") {
     REQUIRE_MESSAGE(push.has_value(), push.error().describe());
     const auto y = makeImage(context(), 4, 4, VK_FORMAT_R8_UINT, "Y");
     const auto u = makeImage(context(), 2, 2, VK_FORMAT_R8_UINT, "U");
-    const auto output = makeImage(context(), 4, 4, VK_FORMAT_R16G16B16A16_SFLOAT, "display");
+    const auto output = makeImage(context(), 4, 4, media::DISPLAY_IMAGE_FORMAT, "display");
     const auto rgba8 = makeImage(context(), 4, 4, VK_FORMAT_R8G8B8A8_UNORM, "rgba8");
     const auto v = makeImage(context(), 2, 2, VK_FORMAT_R8_UINT, "V");
 

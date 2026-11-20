@@ -12,12 +12,16 @@
 
 #include "dvv/base/error.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "dvv_media_shaders/to_display.h"
 #include "gpu_unpack.h"
 
 namespace dvv::media::detail {
+
+static_assert(DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT,
+              "shaders/to_display.slang binding 4 declares rgba16f; change both together");
 
 namespace {
 

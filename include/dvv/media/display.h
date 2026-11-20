@@ -19,6 +19,8 @@ namespace dvv::media {
 // first use as "rgba16f@display" (model Rgb, components R16 G16 B16 A16, one plane of groups of one
 // pixel in 8 bytes, little-endian), so geometry() works. Never an original: acquireOriginal refuses
 // an origin of this format (Internal).
+// The GPU format of the display image (RGBA16F) is DISPLAY_IMAGE_FORMAT in display_vulkan.h; this
+// header stays free of Vulkan.
 [[nodiscard]] FormatId displayFormat();
 // True for the display format (compares the name; never interns).
 [[nodiscard]] bool isDisplay(FormatId format) noexcept;
