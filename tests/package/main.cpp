@@ -1,9 +1,13 @@
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "dvv/media/display_vulkan.h"
+#include "dvv/media/frame_vulkan.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
@@ -42,6 +46,20 @@ int main() {
             std::printf(" %s=%s", name.c_str(), value.c_str());
         }
         std::puts("");
+        ok = false;
+    }
+    // The headers new in 0.2.0 are installed: one symbol from each.
+    const auto size = parseSize("1920x1080");
+    if (!size || *size != std::pair<std::uint32_t, std::uint32_t>{1920, 1080}) {
+        std::puts("parseSize(1920x1080) differs");
+        ok = false;
+    }
+    if (vulkan::BUFFER == vulkan::IMAGE) {
+        std::puts("vulkan::BUFFER equals vulkan::IMAGE");
+        ok = false;
+    }
+    if (DISPLAY_IMAGE_FORMAT != VK_FORMAT_R16G16B16A16_SFLOAT) {
+        std::puts("DISPLAY_IMAGE_FORMAT differs");
         ok = false;
     }
     // dvv::media_sources is linked as a component library: its providers are registered.
