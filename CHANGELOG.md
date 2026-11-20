@@ -50,6 +50,7 @@ GitHub Releases).
 - frame.h includes `dvv/platform/aligned_buffer.h` instead of the whole file reader; include
   `dvv/platform/file_reader.h` yourself where you use it.
 - Diagnostics name the GPU image layout "Opaque" instead of "VkOptimal".
+- The clip description's version error ends "(dvv-media reads 1)" and names no application.
 - The source providers take no parameters and declare no schema; the factory lists providers by
   interface.
 - The synthetic source packs straight into its host frame (one full-frame copy less).

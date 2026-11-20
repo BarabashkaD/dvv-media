@@ -17,7 +17,7 @@ and dvv-gpu next to them at their minimum versions from the same file:
 
 ```powershell
 git clone https://github.com/BarabashkaD/dvv-media
-git clone --branch v0.4.2 https://github.com/BarabashkaD/dvv-build
+git clone --branch v0.5.1 https://github.com/BarabashkaD/dvv-build
 python -m pip install -r dvv-build/tools/requirements.txt
 cmake -DREPO=dvv-media -P dvv-build/tools/fetch-deps.cmake
 ./dvv-build/bootstrap.ps1
@@ -32,7 +32,7 @@ Applications use dvv-media as a git submodule in their `libs/` folder, next to d
 component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.1 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.2 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -40,9 +40,9 @@ dvv_link_components(my_app dvv::media_sources)
 ## Pixel formats
 
 A format is a `PixelFormatDesc` (`dvv/media/pixel_format.h`) named by a `FormatId`; `formatDesc(id)`
-returns it. The 37
-built-in formats have the ids 0 to 36 in the order below. Names are FFmpeg `pix_fmt` names (`v210`
-is the codec name); `findFormat(name)` matches them exactly and case-sensitively.
+returns it. The 37 built-in formats have the ids 0 to 36 in the order below. Names are FFmpeg
+`pix_fmt` names (`v210` is the codec name); `findFormat(name)` matches them exactly and
+case-sensitively.
 
 | Ids | Class | Names |
 | --- | --- | --- |
@@ -188,10 +188,10 @@ Result<ReadLease> lease = co_await store->acquire(
   one being made is joined; otherwise the store runs the converters.
 - `lease.share()` makes a second lease on the same view. It is counted like any lease and
   listed in `outstandingLeases()` with its own location, so every holder of a frame is visible.
-- `lease.planes()` gives the host planes of a host view. GPU resources are reached through the
-  lease with `vulkan::image(lease, plane)` and `vulkan::buffer(lease)` (`dvv/media/frame_vulkan.h`);
-  they are valid while the lease, or a share of it, lives. Keep a share beside any pointer you
-  store.
+- `lease.planes()` gives the host planes of a host view; it is null for an empty lease or a GPU
+  binding. GPU resources are reached through the lease with `vulkan::image(lease, plane)` and
+  `vulkan::buffer(lease)` (`dvv/media/frame_vulkan.h`); they are valid while the lease, or a share
+  of it, lives. Keep a share beside any pointer you store.
 - `acquireOriginal(key, {.api, .domain, .fidelity}, resume_on)` returns an `OriginalRead`:
   `OriginalFidelity::Lossless` gives the unpacked planes, `Exact` the original format.
 - `adopt(key, frame)` puts a ready frame into the store as the key's original.
