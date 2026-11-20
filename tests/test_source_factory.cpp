@@ -214,7 +214,8 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: no confidence is Unsupported naming eve
     CHECK(media::isNoProviderMatch(result.error()));
 }
 
-// rawreel's format dialog is only for a request no provider could match, never for a refusal.
+// An application's format dialog is only for a request no provider could match, never for a
+// refusal.
 TEST_CASE_FIXTURE(FactoryTest, "factory: isNoProviderMatch tells no match from a refusal") {
     SUBCASE("a provider that matches and refuses in open") {
         a().confidence = 95;

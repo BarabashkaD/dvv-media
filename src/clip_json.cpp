@@ -245,14 +245,14 @@ Result<ClipDescription> parseClipJson(std::string_view text, std::string_view cl
     }
     // The version first: a later version may have keys this one does not know.
     DVV_TRY(const json::Value* version, required(errors, root, "", "rawreelClip"));
-    // Any number but the integer 1 is a version this rawreel does not read (2.0 and 1.0 too).
+    // Any number but the integer 1 is a version this library does not read (2.0 and 1.0 too).
     if (!version->is_number()) {
         return errors.at("rawreelClip", "expected the integer 1");
     }
     if (!version->is_number_integer() ||
         (version->is_number_unsigned() ? version->get<std::uint64_t>() != 1
                                        : version->get<std::int64_t>() != 1)) {
-        return errors.at("rawreelClip", std::format("unsupported version {} (this rawreel reads 1)",
+        return errors.at("rawreelClip", std::format("unsupported version {} (dvv-media reads 1)",
                                                     json::dump(*version)));
     }
     DVV_TRY_VOID(checkObject(errors, root, "", CLIP_KEYS));

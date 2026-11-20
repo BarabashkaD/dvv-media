@@ -136,7 +136,7 @@ TEST_CASE("clip JSON: size and frame rate") {
 
 TEST_CASE("clip JSON: the top level") {
     CHECK(refusal(R"({"rawreelClip": 2, "format": "gray"})") ==
-          "rawreelClip: unsupported version 2 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 2 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": "1", "format": "gray"})") ==
           "rawreelClip: expected the integer 1");
     CHECK(refusal(R"({"format": "gray"})") == "missing key 'rawreelClip'");
@@ -181,13 +181,13 @@ TEST_CASE("clip JSON: version values") {
         CAPTURE(value);
         CHECK(refusal(std::string(R"({"rawreelClip": )") + std::string(value) +
                       R"(, "format": "gray"})") ==
-              "rawreelClip: unsupported version " + std::string(value) + " (this rawreel reads 1)");
+              "rawreelClip: unsupported version " + std::string(value) + " (dvv-media reads 1)");
     }
     // A non-integer number is a version too (a future writer's 2.0 is told it is unsupported).
     CHECK(refusal(R"({"rawreelClip": 1.0, "format": "gray"})") ==
-          "rawreelClip: unsupported version 1.0 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 1.0 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": 2.5, "format": "gray"})") ==
-          "rawreelClip: unsupported version 2.5 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 2.5 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": true, "format": "gray"})") ==
           "rawreelClip: expected the integer 1");
 }
