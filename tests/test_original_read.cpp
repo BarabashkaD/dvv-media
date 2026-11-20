@@ -36,7 +36,9 @@ using dvv::media::FrameStore;
 using dvv::media::HostPlanesB;
 using dvv::media::LayoutPolicy;
 using dvv::media::MemKind;
+using dvv::media::OriginalFidelity;
 using dvv::media::OriginalRead;
+using dvv::media::OriginalRequest;
 using dvv::media::OriginId;
 using dvv::media::ViewSpec;
 using dvv::media::test::concatenated;
@@ -66,8 +68,11 @@ struct HostStoreCase {
     }
 
     [[nodiscard]] dvv::Result<OriginalRead> read(std::int64_t index, bool require_exact = false) {
-        return syncWait(store->acquireOriginal({origin, index}, Api::HostPlanes,
-                                               store->hostDomain(), *pool, require_exact));
+        const OriginalRequest request{
+            .api = Api::HostPlanes,
+            .domain = store->hostDomain(),
+            .fidelity = require_exact ? OriginalFidelity::Exact : OriginalFidelity::Lossless};
+        return syncWait(store->acquireOriginal({origin, index}, request, *pool));
     }
 
     FrameDesc desc;
@@ -177,8 +182,10 @@ TEST_CASE("original read: a host-only store has no staging domain") {
             CHECK(test.store->stagingDomain() == std::nullopt);
             CHECK(test.store->deviceDomain() == std::nullopt);
             const auto read = syncWait(test.store->acquireOriginal(
-                {test.origin, 1}, Api::HostPlanes,
-                Domain{MemKind::HostVisible, dvv::gpu::DeviceId{0}, 1}, *test.pool));
+                {test.origin, 1},
+                {.api = Api::HostPlanes,
+                 .domain = Domain{MemKind::HostVisible, dvv::gpu::DeviceId{0}, 1}},
+                *test.pool));
             REQUIRE_FALSE(read.has_value());
             CHECK(read.error().code == Errc::Unsupported);
         }
@@ -196,4 +203,75 @@ TEST_CASE("original read: a detached origin is Internal") {
             CHECK(read.error().message.find("not attached") != std::string::npos);
         }
     }
+}
+
+TEST_CASE("original read: the request form names the fidelity") {
+    for (const FrameDesc& desc : descs()) {
+        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+            HostStoreCase test(desc);
+            const Domain host = test.store->hostDomain();
+            const auto lossless = syncWait(test.store->acquireOriginal(
+                {test.origin, 1}, {.api = Api::HostPlanes, .domain = host}, *test.pool));
+            CHECK(lossless.has_value());
+            if (lossless) {
+                CHECK(lossless->lease().fidelity() == Fidelity::Lossless);
+                CHECK(lossless->lease().view().format == dvv::media::unpackedFormat(desc.format));
+            }
+            const auto exact = syncWait(test.store->acquireOriginal(
+                {test.origin, 1},
+                {.api = Api::HostPlanes, .domain = host, .fidelity = OriginalFidelity::Exact},
+                *test.pool));
+            CHECK(exact.has_value());
+            if (exact) {
+                CHECK(exact->lease().fidelity() == Fidelity::Exact);
+                CHECK(exact->lease().view().format == desc.format);
+            }
+        }
+    }
+}
+
+TEST_CASE("original read: the old form forwards") {
+    for (const FrameDesc& desc : descs()) {
+        SUBCASE(dvv::media::descriptor(desc.format).name.c_str()) {
+            HostStoreCase test(desc);
+            const Domain host = test.store->hostDomain();
+            const auto lossless = test.read(1);
+            const auto exact = test.read(1, true);
+            const auto old_lossless = syncWait(test.store->acquireOriginal(
+                {test.origin, 1}, Api::HostPlanes, host, *test.pool, false));
+            const std::uint_least32_t lossless_line = __LINE__ - 2;
+            const auto old_exact = syncWait(test.store->acquireOriginal(
+                {test.origin, 1}, Api::HostPlanes, host, *test.pool, true));
+            const std::uint_least32_t exact_line = __LINE__ - 2;
+            CHECK(lossless.has_value());
+            CHECK(exact.has_value());
+            CHECK(old_lossless.has_value());
+            CHECK(old_exact.has_value());
+            if (lossless && exact && old_lossless && old_exact) {
+                CHECK(old_lossless->lease().view() == lossless->lease().view());
+                CHECK(old_exact->lease().view() == exact->lease().view());
+                CHECK(old_lossless->lease().fidelity() == Fidelity::Lossless);
+                CHECK(old_exact->lease().fidelity() == Fidelity::Exact);
+            }
+            std::vector<std::uint_least32_t> lines;
+            for (const auto& info : test.store->outstandingLeases()) {
+                lines.push_back(info.where.line());
+            }
+            CHECK(std::ranges::count(lines, lossless_line) == 1);
+            CHECK(std::ranges::count(lines, exact_line) == 1);
+        }
+    }
+}
+
+// Overload shapes: an ambiguous or missing overload fails the build.
+TEST_CASE("original read: the overloads resolve by the third argument") {
+    HostStoreCase test(descs().front());
+    const Domain host = test.store->hostDomain();
+    dvv::IExecutor& cpu = *test.pool;
+    const FrameKey key{test.origin, 0};
+    CHECK(syncWait(test.store->acquireOriginal(key, {}, cpu)).has_value());
+    CHECK(syncWait(test.store->acquireOriginal(key, {Api::HostPlanes}, cpu)).has_value());
+    CHECK(syncWait(test.store->acquireOriginal(key, {.api = Api::HostPlanes, .domain = host}, cpu))
+              .has_value());
+    CHECK(syncWait(test.store->acquireOriginal(key, Api::HostPlanes, host, cpu)).has_value());
 }

@@ -97,8 +97,12 @@ struct GpuStore {
     [[nodiscard]] dvv::Result<media::OriginalRead> read(std::int64_t index, Api api, Domain domain,
                                                         dvv::IExecutor& resume_on,
                                                         bool require_exact = false) const {
-        return syncWait(
-            store->acquireOriginal({origin, index}, api, domain, resume_on, require_exact));
+        const media::OriginalRequest request{.api = api,
+                                             .domain = domain,
+                                             .fidelity = require_exact
+                                                             ? media::OriginalFidelity::Exact
+                                                             : media::OriginalFidelity::Lossless};
+        return syncWait(store->acquireOriginal({origin, index}, request, resume_on));
     }
 
     [[nodiscard]] ReadLease take(std::int64_t index, const ViewSpec& want,

@@ -46,7 +46,7 @@ public:
     tryOpen(std::string_view uri,
             dvv::platform::FileReadMode file_reads = dvv::platform::FileReadMode::Auto,
             std::optional<dvv::media::FormatHint> hint = std::nullopt);
-    // attach + acquireOriginal(requireExact, HostPlanes, host) + copy of the contiguous bytes; the
+    // attach + acquireOriginal(Exact, HostPlanes, host) + copy of the contiguous bytes; the
     // source is detached again before this returns.
     [[nodiscard]] dvv::Result<std::vector<std::byte>> originalBytes(
         const std::shared_ptr<dvv::media::ISource>& source, std::int64_t index);

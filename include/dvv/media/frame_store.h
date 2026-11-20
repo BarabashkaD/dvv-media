@@ -136,6 +136,14 @@ struct FrameStoreOptions {
     std::size_t maxPlanDepth = 6;
 };
 
+// Lossless: the unpacked planes of the original; Exact: the original format.
+enum class OriginalFidelity : std::uint8_t { Lossless, Exact };
+struct OriginalRequest {
+    Api api = Api::HostPlanes;
+    Domain domain{};
+    OriginalFidelity fidelity = OriginalFidelity::Lossless;
+};
+
 class FrameStore final : public Managed<FrameStore>,
                          public std::enable_shared_from_this<FrameStore> {
 public:
@@ -162,10 +170,13 @@ public:
     [[nodiscard]] Task<Result<PinLease>> pin(
         FrameKey key, ViewSpec view, IExecutor& resume_on,
         std::source_location where = std::source_location::current());
-    // The key's original in `api` and `domain`, colour forced to the frame's own: with
-    // require_exact the original format (Exact), otherwise the unpacked format (Lossless). Plans
-    // nothing itself: an acquire of originalView() or planesView(). Errc::Internal for a detached
-    // or unknown origin.
+    // The key's original as `request` asks, colour forced to the frame's own. Plans nothing
+    // itself: an acquire of originalView() (Exact) or planesView() (Lossless). Errc::Internal for
+    // a detached or unknown origin. `request` is taken by value: the task is lazy.
+    [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
+        FrameKey key, OriginalRequest request, IExecutor& resume_on,
+        std::source_location where = std::source_location::current());
+    // Deprecated (removed in 1.0.0): acquireOriginal(key, {api, domain, fidelity}, resume_on).
     [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
         FrameKey key, Api api, Domain domain, IExecutor& resume_on, bool require_exact = false,
         std::source_location where = std::source_location::current());

@@ -217,8 +217,12 @@ TEST_SUITE("store") {
             .format = dvv::media::displayFormat(), .colour = 0, .width = 1, .height = 1};
         const OriginId origin =
             store->attach(std::make_shared<PackedSource>(display, 1, 11)).value();
-        const auto read = syncWait(store->acquireOriginal({origin, 0}, Api::HostPlanes,
-                                                          store->hostDomain(), *requester, true));
+        const auto read =
+            syncWait(store->acquireOriginal({origin, 0},
+                                            {.api = Api::HostPlanes,
+                                             .domain = store->hostDomain(),
+                                             .fidelity = dvv::media::OriginalFidelity::Exact},
+                                            *requester));
         REQUIRE_FALSE(read.has_value());
         CHECK(read.error().code == Errc::Internal);
         CHECK(contains(read.error().message, "never an original"));

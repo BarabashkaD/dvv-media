@@ -555,6 +555,19 @@ Task<Result<PinLease>> FrameStore::pin(FrameKey key, ViewSpec view, IExecutor& r
 Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, Api api, Domain domain,
                                                        IExecutor& resume_on, bool require_exact,
                                                        std::source_location where) {
+    // A coroutine forwarder would copy the arguments into a second frame; this one returns the
+    // lazy task of the request form.
+    return acquireOriginal(
+        key,
+        {.api = api,
+         .domain = domain,
+         .fidelity = require_exact ? OriginalFidelity::Exact : OriginalFidelity::Lossless},
+        resume_on, where);
+}
+
+Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, OriginalRequest request,
+                                                       IExecutor& resume_on,
+                                                       std::source_location where) {
     const std::shared_ptr<FrameStore> self = shared_from_this();  // the store outlives the call
     std::optional<FrameDesc> desc;
     {
@@ -575,8 +588,9 @@ Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, Api api, Do
                                         "original",
                                         key.index, key.origin));
     }
-    const ViewSpec want =
-        require_exact ? originalView(*desc, api, domain) : planesView(*desc, api, domain);
+    const ViewSpec want = request.fidelity == OriginalFidelity::Exact
+                              ? originalView(*desc, request.api, request.domain)
+                              : planesView(*desc, request.api, request.domain);
     Result<ReadLease> lease =
         co_await acquire(key, want, resume_on, where);  // resumes on resume_on
     if (!lease) {
