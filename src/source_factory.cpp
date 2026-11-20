@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <source_location>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -87,9 +88,22 @@ bool isNoMatchWhere(const std::source_location& where) noexcept {
            std::string_view(where.file_name()) == NO_MATCH_WHERE.file_name();
 }
 
-// Unsupported `message` for a request no provider could match, marked by NO_MATCH_WHERE (the
-// message names the case, so the call site's line is not needed).
-std::unexpected<Error> noMatchError(std::string message) {
+// "; unavailable: <id> (<reason>), <id> (<reason>)", empty for an empty list. It follows the
+// "id: why" text a caller may parse, so it never starts with "<id>: ".
+std::string unavailableText(std::span<const UnavailableProvider> unavailable) {
+    std::string text;
+    for (const UnavailableProvider& entry : unavailable) {
+        text += text.empty() ? "; unavailable: " : ", ";
+        text += std::format("{} ({})", entry.id, entry.reason);
+    }
+    return text;
+}
+
+// Unsupported `message` and the unavailable providers for a request no provider could match,
+// marked by NO_MATCH_WHERE (the message names the case, so the call site's line is not needed).
+std::unexpected<Error> noMatchError(std::string message,
+                                    std::span<const UnavailableProvider> unavailable) {
+    message += unavailableText(unavailable);
     return makeError(Errc::Unsupported, std::move(message), NO_MATCH_WHERE);
 }
 
@@ -126,8 +140,13 @@ Result<std::unique_ptr<SourceFactory>> SourceFactory::create(ComponentRegistry& 
         return makeError(Errc::Internal, "SourceFactory: no io executor");
     }
     std::vector<ProviderEntry> providers;
+    std::vector<UnavailableProvider> unavailable;
     for (const ComponentStatus& status : registry.list<ISourceProvider>()) {
-        if (!status.available()) {
+        if (status.unavailable) {
+            unavailable.push_back(
+                UnavailableProvider{.id = status.info.id,
+                                    .reason = status.unavailable->reason,
+                                    .capability = status.unavailable->capability});
             continue;
         }
         auto provider = registry.createComponent<ISourceProvider>(status.info.id, where);
@@ -139,18 +158,31 @@ Result<std::unique_ptr<SourceFactory>> SourceFactory::create(ComponentRegistry& 
         providers.push_back(ProviderEntry{.id = status.info.id, .provider = std::move(*provider)});
     }
     if (providers.empty()) {
-        return makeError(Errc::Unsupported, "no source providers registered");
+        return makeError(Errc::Unsupported,
+                         "no source providers registered" + unavailableText(unavailable));
     }
-    // list() is sorted by id, so providers_ is too.
+    // list() is sorted by id, so providers_ and unavailable_ are too.
     return std::make_unique<SourceFactory>(
         CreationKey<SourceFactory>(
             LifetimeRegistry::instance().issue<SourceFactory>(NO_OWNER, where)),
-        std::move(providers), std::move(io));
+        std::move(providers), std::move(unavailable), std::move(io));
 }
 
 SourceFactory::SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
                              std::shared_ptr<IExecutor> io) noexcept
-    : Managed(std::move(key)), providers_(std::move(providers)), io_(std::move(io)) {}
+    : SourceFactory(std::move(key), std::move(providers), {}, std::move(io)) {}
+
+SourceFactory::SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
+                             std::vector<UnavailableProvider> unavailable,
+                             std::shared_ptr<IExecutor> io) noexcept
+    : Managed(std::move(key)),
+      providers_(std::move(providers)),
+      unavailable_(std::move(unavailable)),
+      io_(std::move(io)) {}
+
+std::span<const UnavailableProvider> SourceFactory::unavailableProviders() const noexcept {
+    return unavailable_;
+}
 
 bool SourceFactory::disabled(std::size_t index) const {
     const std::scoped_lock lock(mutex_);
@@ -194,7 +226,8 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         }
     }
     if (providers.empty()) {
-        co_return noMatchError(std::format("no source provider for scheme '{}'", uri.scheme));
+        co_return noMatchError(std::format("no source provider for scheme '{}'", uri.scheme),
+                               unavailable_);
     }
 
     // 2. The head of a file, read on the io executor; a file that cannot be read is Io at once.
@@ -218,6 +251,14 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         const auto chosen = std::ranges::find_if(
             providers, [&](std::size_t index) { return providers_[index].id == impl_id; });
         if (chosen == providers.end()) {
+            const auto skipped = std::ranges::find_if(
+                unavailable_,
+                [&](const UnavailableProvider& entry) { return entry.id == impl_id; });
+            if (skipped != unavailable_.end()) {
+                co_return makeError(Errc::Unsupported,
+                                    std::format("source provider '{}' is unavailable: {}", impl_id,
+                                                skipped->reason));
+            }
             std::string ids;
             for (const std::size_t index : providers) {
                 ids += ids.empty() ? "" : ", ";
@@ -240,7 +281,8 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         }
         if (match->confidence <= 0) {
             co_return noMatchError(std::format("{} cannot open '{}': {}", providers_[index].id,
-                                               formatUri(uri), match->why));
+                                               formatUri(uri), match->why),
+                                   unavailable_);
         }
         co_return co_await openWith(index, full_request, match->guess, stop);
     }
@@ -267,7 +309,8 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
     }
     if (scored.empty()) {
         co_return noMatchError(
-            std::format("no source provider can open '{}': {}", formatUri(uri), reasons));
+            std::format("no source provider can open '{}': {}", formatUri(uri), reasons),
+            unavailable_);
     }
     // `providers` is in id order and the sort is stable, so equal confidences stay in id order.
     std::ranges::stable_sort(scored, std::ranges::greater{},

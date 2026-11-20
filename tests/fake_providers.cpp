@@ -156,12 +156,42 @@ public:
     }
 };
 
+constexpr std::array<std::string_view, 1> FAKE2_SCHEMES{"fake2"};
+
+// A provider whose probe needs a capability the test registries leave out, so it is unavailable.
+class Fake2Provider final : public ISourceProvider, public Managed<Fake2Provider> {
+public:
+    explicit Fake2Provider(CreationKey<ComponentRegistry> key) noexcept
+        : Managed<Fake2Provider>(std::move(key)) {}
+
+    static ComponentInfo info() noexcept { return {.id = "fake2", .name = "fake2", .version = 1}; }
+    static std::expected<void, Unavailable> probe(const Capabilities& caps) {
+        return require(caps, {"fake2"});
+    }
+
+    [[nodiscard]] std::span<const std::string_view> schemes() const noexcept override {
+        return FAKE2_SCHEMES;
+    }
+
+    [[nodiscard]] Match match(const SourceRequest& /*request*/,
+                              std::span<const std::byte> /*head*/) const override {
+        return Match{.confidence = 0, .guess = {}, .why = "fake2"};
+    }
+
+    [[nodiscard]] Task<Result<std::unique_ptr<ISource>>> open(
+        OpenTicket /*ticket*/, const SourceRequest& /*request*/, const FormatGuess& /*guess*/,
+        const OpenContext& /*context*/) override {
+        co_return makeError(Errc::Internal, "fake2 cannot open");
+    }
+};
+
 }  // namespace
 
 DVV_REGISTER(ISourceProvider, FakeProviderA);
 DVV_REGISTER(ISourceProvider, FakeProviderB);
 DVV_REGISTER(ISourceProvider, FakeProviderC);
 DVV_REGISTER(ISourceProvider, GatedProvider);
+DVV_REGISTER(ISourceProvider, Fake2Provider);
 
 void GatedState::open() {
     std::vector<std::pair<std::coroutine_handle<>, IExecutor*>> waiters;

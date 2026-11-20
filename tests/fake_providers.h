@@ -1,9 +1,10 @@
 #pragma once
 
-// Four scripted source providers for the factory tests: fake_a, fake_b, fake_c and gated. Each is
-// a component registered for ISourceProvider that needs the capability "fake"; the first three
-// open the schemes "fake" and "file", gated opens "gated". Only dvv_media_factory_tests links
-// them, so they never compete with the real providers.
+// Five source providers for the factory tests: fake_a, fake_b, fake_c, gated and fake2. Each is
+// a component registered for ISourceProvider; the first four need the capability "fake" (fake_a,
+// fake_b and fake_c open the schemes "fake" and "file", gated opens "gated"), fake2 needs
+// "fake2", which the fixture's registry lacks, so it is unavailable there. Only
+// dvv_media_factory_tests links them, so they never compete with the real providers.
 
 #include <atomic>
 #include <coroutine>

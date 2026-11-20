@@ -415,7 +415,90 @@ TEST_CASE("factory: create without available providers is Unsupported") {
     const auto created = media::SourceFactory::create(*registry, *pool);
     REQUIRE_FALSE(created.has_value());
     CHECK(created.error().code == dvv::Errc::Unsupported);
-    CHECK(created.error().message == "no source providers registered");
+    CHECK(created.error().message ==
+          "no source providers registered; unavailable: "
+          "fake2 (missing capability 'fake2'), fake_a (missing capability 'fake'), "
+          "fake_b (missing capability 'fake'), fake_c (missing capability 'fake'), "
+          "gated (missing capability 'fake')");
+}
+
+constexpr std::string_view FAKE2_REASON = "missing capability 'fake2'";
+constexpr std::string_view UNAVAILABLE_MARK = "; unavailable: ";
+
+// A fixture whose registry has both capabilities, so no provider is unavailable.
+class FullFactoryTest {
+public:
+    FullFactoryTest() {
+        fakes::resetScripts();
+        registry = dvv::ComponentRegistry::create(dvv::Capabilities{"fake", "fake2"});
+        auto pool = dvv::ExecutorFactory::makeThreadPool(2);
+        REQUIRE(pool.has_value());
+        io = std::move(*pool);
+        auto created = media::SourceFactory::create(*registry, io);
+        REQUIRE(created.has_value());
+        factory = std::move(*created);
+    }
+
+    [[nodiscard]] OpenResult open(std::string_view text) const {
+        auto uri = dvv::parseUri(text);
+        REQUIRE(uri.has_value());
+        return dvv::syncWait(factory->open({.uri = *uri, .hint = std::nullopt}));
+    }
+
+    std::unique_ptr<dvv::ComponentRegistry> registry;
+    std::shared_ptr<dvv::ThreadPool> io;
+    std::unique_ptr<media::SourceFactory> factory;
+};
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: an unavailable provider is named in a no-match error") {
+    const auto result = open("fake2:x");
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(media::isNoProviderMatch(result.error()));
+    CHECK(result.error().message.ends_with("; unavailable: fake2 (missing capability 'fake2')"));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: unavailableProviders lists the skipped providers") {
+    const auto listed = factory->unavailableProviders();
+    REQUIRE(listed.size() == 1);
+    CHECK(listed[0].id == "fake2");
+    CHECK(listed[0].reason == FAKE2_REASON);
+    CHECK(listed[0].capability == "fake2");
+}
+
+TEST_CASE_FIXTURE(FullFactoryTest,
+                  "factory: unavailableProviders is empty when all are available") {
+    CHECK(factory->unavailableProviders().empty());
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: ?impl= naming an unavailable provider") {
+    dvv::Uri uri;
+    uri.scheme = "fake";
+    uri.path = "x";
+    uri.params.emplace_back("impl", "fake2");
+    const auto result = dvv::syncWait(factory->open({.uri = uri, .hint = std::nullopt}));
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(result.error().message ==
+          "source provider 'fake2' is unavailable: missing capability 'fake2'");
+    CHECK_FALSE(media::isNoProviderMatch(result.error()));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: the reasons part of a no-match text is unchanged") {
+    a().why = "why a";
+    b().why = "why b";
+    c().why = "why c";
+    const auto with_unavailable = open("fake:x");
+    checkError(with_unavailable, dvv::Errc::Unsupported);
+    const FullFactoryTest full;
+    fakes::script("fake_a").why = "why a";
+    fakes::script("fake_b").why = "why b";
+    fakes::script("fake_c").why = "why c";
+    const auto without = full.open("fake:x");
+    checkError(without, dvv::Errc::Unsupported);
+    const std::string& text = with_unavailable.error().message;
+    const std::size_t mark = text.find(UNAVAILABLE_MARK);
+    REQUIRE(mark != std::string::npos);
+    CHECK(text.substr(0, mark) == without.error().message);
+    CHECK(without.error().message.find(UNAVAILABLE_MARK) == std::string::npos);
 }
 
 TEST_CASE("factory: create with a null io executor is Internal") {

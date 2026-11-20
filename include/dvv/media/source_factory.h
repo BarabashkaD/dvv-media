@@ -138,6 +138,13 @@ struct ProviderEntry {
     std::unique_ptr<ISourceProvider> provider;
 };
 
+// A Source provider the registry reported unavailable when the factory was created.
+struct UnavailableProvider {
+    std::string_view id{};     // ComponentInfo::id (static storage)
+    std::string reason{};      // the registry's Unavailable::reason, e.g. "missing capability 'x'"
+    std::string capability{};  // Unavailable::capability; empty when another cause
+};
+
 class SourceFactory final : public Managed<SourceFactory> {
 public:
     using OpenResult = std::variant<std::unique_ptr<ISource>, Ambiguous>;
@@ -145,13 +152,21 @@ public:
     // Own authority. Creates one instance of every available component registered for
     // ISourceProvider in `registry`; one that fails to be created is logged and skipped.
     // Errc::Internal for a null `io`; Errc::Unsupported "no source providers registered" when no
-    // provider is left.
+    // provider is left, followed by the unavailable providers ("; unavailable: <id> (<reason>)").
     [[nodiscard]] static Result<std::unique_ptr<SourceFactory>> create(
         ComponentRegistry& registry, std::shared_ptr<IExecutor> io,
         std::source_location where = std::source_location::current());
-    // For create() only (the key).
+    // For create() only (the key). Deprecated (removed in 1.0.0): the form without the
+    // unavailable list.
     SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
                   std::shared_ptr<IExecutor> io) noexcept;
+    // For create() only (the key).
+    SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
+                  std::vector<UnavailableProvider> unavailable,
+                  std::shared_ptr<IExecutor> io) noexcept;
+
+    // The Source providers the registry reported unavailable at create(), sorted by id.
+    [[nodiscard]] std::span<const UnavailableProvider> unavailableProviders() const noexcept;
 
     // Picks a provider and opens the source (design §5.5); thread-safe. A file's head is read on
     // the io executor. Ambiguous when the best confidence is below 60 or another is within less
@@ -179,7 +194,8 @@ private:
     [[nodiscard]] Task<Result<OpenResult>> openWith(std::size_t index, const SourceRequest& request,
                                                     const FormatGuess& guess, std::stop_token stop);
 
-    std::vector<ProviderEntry> providers_;  // sorted by id
+    std::vector<ProviderEntry> providers_;          // sorted by id
+    std::vector<UnavailableProvider> unavailable_;  // sorted by id
     std::shared_ptr<IExecutor> io_;
     mutable std::mutex mutex_;           // guards disabled_
     std::vector<std::size_t> disabled_;  // providers_ indices that threw from match() or open()
