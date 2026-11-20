@@ -1485,12 +1485,14 @@ TEST_SUITE("store") {
             {}, {}, [](dvv::media::FrameStoreOptions& options) { options.hostBudget = 1024; });
         const auto source = makeSource(10);
         const OriginId origin = store->attach(source).value();
-        for (std::int64_t index = 0; index < 6; ++index) {
-            static_cast<void>(take(*store, {origin, index}, hostView, *requester));
-        }
+        // Keys 0 and 1 are held from their first acquire, so they stay the least recently used:
+        // the eviction must step over them to reach the cached keys 2 and 3.
         const ReadLease leased = take(*store, {origin, 0}, hostView, *requester);
         Result<PinLease> pinned = syncWait(store->pin({origin, 1}, hostView, *requester));
         REQUIRE(pinned.has_value());
+        for (std::int64_t index = 2; index < 6; ++index) {
+            static_cast<void>(take(*store, {origin, index}, hostView, *requester));
+        }
         REQUIRE(store->stats().tiers[0].bytes == 6 * CAPACITY);
 
         // K = 4 concurrent produces of fresh keys, each held after its allocation.
@@ -1503,6 +1505,8 @@ TEST_SUITE("store") {
         std::uint64_t evictions = 0;
         std::size_t outstanding = 0;
         bool leases_valid = false;
+        bool held_indexed = false;
+        bool cached_evicted = false;
         std::jthread opener([&] {
             reached = waitFor([&] { return gate.waiting() == PRODUCES; });
             const auto stats = store->stats();
@@ -1511,6 +1515,11 @@ TEST_SUITE("store") {
             evictions = stats.evictions;
             outstanding = store->outstandingLeases().size();
             leases_valid = leased.desc() == desc && pinned && pinned->desc() == desc;
+            // A lease keeps its frame alive even out of the index: check the index itself.
+            held_indexed = !StoreAccess::views(*store, {origin, 0}).empty() &&
+                           !StoreAccess::views(*store, {origin, 1}).empty();
+            cached_evicted = StoreAccess::views(*store, {origin, 2}).empty() &&
+                             StoreAccess::views(*store, {origin, 3}).empty();
             gate.open();
         });
         std::vector<Task<Result<ReadLease>>> tasks;
@@ -1523,8 +1532,10 @@ TEST_SUITE("store") {
         opener.join();
         CHECK(reached);
         CHECK(pending == PRODUCES * CAPACITY);
-        CHECK(evictions >= 2);
+        CHECK(evictions == 2);  // 896, 1024, then 1152 -> 1024 twice
         CHECK(bytes + pending <= 1024);
+        CHECK(held_indexed);
+        CHECK(cached_evicted);
         CHECK(leases_valid);
         CHECK(outstanding == 2);
         for (const Result<ReadLease>& result : results) {
@@ -1581,6 +1592,37 @@ TEST_SUITE("store") {
         CHECK(calls.load() == 2);
         CHECK(during.value_or(0) == CAPACITY);
         CHECK(hostPending(*store) == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a failed allocation settles only its own bytes") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();  // the allocator lives in the store: no cycle
+        std::atomic<int> calls{0};
+        std::optional<std::size_t> during;  // written by the retry, read after the acquire
+        // Call 1 is the produce's first allocation; call 2, its second, fails once; call 3 is
+        // the retry, while the first allocation is still alive.
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &during, raw](std::size_t bytes,
+                                   std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                const int call = calls.fetch_add(1);
+                if (call == 1) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                if (call == 2) {
+                    during = raw->stats().tiers[0].pending;
+                }
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const auto source = makeSource();
+        source->extraAllocations = 1;
+        const OriginId origin = store->attach(source).value();
+        const Result<ReadLease> lease = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(lease.has_value());
+        CHECK(calls.load() == 3);
+        CHECK(during.value_or(0) == 2 * CAPACITY);  // the first allocation stays counted
+        CHECK(settled(*store));
         requireInvariants(*store);
     }
 

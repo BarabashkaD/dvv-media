@@ -183,7 +183,8 @@ public:
     [[nodiscard]] dvv::Task<dvv::Result<std::shared_ptr<media::IFrame>>> run(
         media::detail::ConvertInput input, media::detail::ConvertContext context) const override {
         co_await gate_->wait(context.cpu);
-        co_return co_await wrapped_->run(input, context);
+        co_return co_await wrapped_->run(input,
+                                         context);  // copied: ConvertInput is trivially copyable
     }
 
 private:
