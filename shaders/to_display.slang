@@ -25,7 +25,7 @@ struct ToDisplayPush
 [[vk::binding(1, 0)]] [format("unknown")] RWTexture2D<uint> plane1;
 [[vk::binding(2, 0)]] [format("unknown")] RWTexture2D<uint> plane2;
 [[vk::binding(3, 0)]] [format("unknown")] RWTexture2D<uint> plane3;
-[[vk::binding(4, 0)]] [format("rgba16f")] RWTexture2D<float4> display;
+[[vk::binding(4, 0)]] [format("rgba16f")] RWTexture2D<float4> display; // DISPLAY_IMAGE_FORMAT (dvv/media/display_vulkan.h)
 
 static const float PQ_M1 = 0.1593017578125;
 static const float PQ_M2 = 78.84375;

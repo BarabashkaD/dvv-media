@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(dvv_media VERSION 0.1.1 DESCRIPTION "dvv media layer" LANGUAGES CXX)
+project(dvv_media VERSION 0.2.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label (user decision U-M4ORDER).
 set(dvv_media_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -36,6 +36,7 @@ add_library(dvv_media STATIC
     src/file_name.cpp
     src/format_json.cpp
     src/frame_store.cpp
+    src/frame_vulkan.cpp
     src/frames.cpp
     src/gpu_unpack.cpp
     src/patterns.cpp
@@ -53,7 +54,8 @@ target_include_directories(dvv_media PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(dvv_media PUBLIC dvv::base dvv::registry dvv::platform dvv::gpu)
-# src/sources/uri_params.h: shared by the sources and parseFileName() (file_name.h).
+# src/sources/uri_params.h: shared by the sources and parseFileName() (file_name.h); its .cpp also
+# holds the bodies of the public size and rate grammar (dvv/media/rate_size_text.h).
 target_include_directories(dvv_media PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 dvv_set_compiler_options(dvv_media)
 # The GPU unpack shader (M2 design §5.4) and the ToDisplay shader (M3 design D3-D5), embedded as

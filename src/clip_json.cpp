@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "dvv/base/json.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
@@ -244,14 +245,14 @@ Result<ClipDescription> parseClipJson(std::string_view text, std::string_view cl
     }
     // The version first: a later version may have keys this one does not know.
     DVV_TRY(const json::Value* version, required(errors, root, "", "rawreelClip"));
-    // Any number but the integer 1 is a version this rawreel does not read (2.0 and 1.0 too).
+    // Any number but the integer 1 is a version this library does not read (2.0 and 1.0 too).
     if (!version->is_number()) {
         return errors.at("rawreelClip", "expected the integer 1");
     }
     if (!version->is_number_integer() ||
         (version->is_number_unsigned() ? version->get<std::uint64_t>() != 1
                                        : version->get<std::int64_t>() != 1)) {
-        return errors.at("rawreelClip", std::format("unsupported version {} (this rawreel reads 1)",
+        return errors.at("rawreelClip", std::format("unsupported version {} (dvv-media reads 1)",
                                                     json::dump(*version)));
     }
     DVV_TRY_VOID(checkObject(errors, root, "", CLIP_KEYS));
@@ -276,7 +277,8 @@ Result<ClipDescription> parseClipJson(std::string_view text, std::string_view cl
 }
 
 Result<std::string> readSmallFile(std::string_view utf8_path) {
-    DVV_TRY(const platform::FileReader reader, platform::FileReader::open(pathFromUtf8(utf8_path)));
+    DVV_TRY(const platform::FileReader reader,
+            platform::FileReader::open(dvv::pathFromText(utf8_path)));
     if (reader.size() > MAX_SMALL_FILE) {
         return makeError(Errc::Format, std::format("'{}' is too large", utf8_path));
     }

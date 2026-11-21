@@ -27,11 +27,13 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/clip_json.h"
 #include "dvv/media/file_name.h"
 #include "dvv/media/format_json.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
@@ -39,7 +41,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 #include "sources/file_read.h"
 #include "sources/uri_params.h"
 
@@ -51,7 +52,6 @@ constexpr std::array<std::string_view, 1> SCHEMES{"file"};
 constexpr std::array<std::string_view, 6> OWN_PARAMETERS{"fmt", "size", "w", "h", "fps", "clip"};
 constexpr auto ALLOWED = detail::withColourParameters(OWN_PARAMETERS);
 
-constexpr Rational DEFAULT_FPS{25, 1};
 // The format assumed when only the size is known.
 constexpr std::string_view GUESS_FORMAT = "yuv420p";
 // The smallest host frame alignment (a cache line); unbuffered reads need the reader's.
@@ -206,7 +206,7 @@ Known gather(const SourceRequest& request) {
     }
 
     if (const auto text = uri.param("fps")) {
-        if (const auto fps = detail::parseFps(*text)) {
+        if (const auto fps = parseFps(*text)) {
             known.fps = *fps;
         }
     } else if (hint.fps) {
@@ -289,7 +289,7 @@ Result<Opened> openFile(const SourceRequest& request) {
         } else {
             DVV_TRY(format, parseFormat(GUESS_FORMAT));
         }
-        fmt_param = descriptor(format).name;
+        fmt_param = formatDesc(format).name;
     }
 
     DVV_TRY(const std::optional<Size> query_size, detail::sizeFromQuery(uri));
@@ -311,9 +311,9 @@ Result<Opened> openFile(const SourceRequest& request) {
     }
     const auto [width, height] = size;
 
-    Rational fps = DEFAULT_FPS;
+    Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(fps, detail::parseFps(*text));
+        DVV_TRY(fps, parseFps(*text));
     } else if (hint.fps) {
         fps = *hint.fps;
     } else if (clip && clip->fps) {
@@ -324,11 +324,11 @@ Result<Opened> openFile(const SourceRequest& request) {
     // The colour (D5R §1.3): the query, then the clip description, then the file name.
     DVV_TRY(const ColourSpec colour_spec, colourSpecFromQuery(uri));
     const ColourParams colour = merged(withClipColour(colour_spec, clip ? &*clip : nullptr, name),
-                                       descriptor(format).model);
+                                       formatDesc(format).model);
     DVV_TRY(const FrameGeometry frame, geometry(format, width, height));
 
     DVV_TRY(platform::FileReader reader,
-            platform::FileReader::open(pathFromUtf8(uri.path), request.fileReads));
+            platform::FileReader::open(dvv::pathFromText(uri.path), request.fileReads));
     const std::uint64_t frame_bytes = frame.bytes;
     const std::uint64_t frames = reader.size() / frame_bytes;
 
@@ -338,7 +338,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     resolved.params = {
         {"fmt", fmt_param},
         {"size", std::format("{}x{}", width, height)},
-        {"fps", detail::formatFps(fps)},
+        {"fps", formatFps(fps)},
     };
     if (const auto value = uri.param("clip")) {
         resolved.params.emplace_back("clip", std::string(*value));
@@ -421,15 +421,11 @@ private:
 
 class RawFileProvider final : public ISourceProvider, public Managed<RawFileProvider> {
 public:
-    RawFileProvider(CreationKey<ComponentRegistry> key, const ParameterValues& /*values*/) noexcept
+    explicit RawFileProvider(CreationKey<ComponentRegistry> key) noexcept
         : Managed(std::move(key)) {}
 
     static ComponentInfo info() noexcept {
-        return {.id = "raw", .name = "Raw video file", .kind = Kind::Source, .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "raw", .name = "Raw video file", .version = 1};
     }
     static std::expected<void, Unavailable> probe(const Capabilities& /*caps*/) { return {}; }
 

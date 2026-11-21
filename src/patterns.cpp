@@ -48,7 +48,7 @@ Result<CodeValues> generate(Pattern pattern, FormatId format, std::uint32_t widt
     if (auto frame = geometry(format, width, height); !frame) {
         return std::unexpected(std::move(frame.error()));
     }
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     CodeValues result{.format = format, .width = width, .height = height};
     for (std::size_t c = 0; c < d.componentCount; ++c) {
         const std::uint8_t bits = d.components[c].bits;

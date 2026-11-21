@@ -39,7 +39,7 @@ detail::ToDisplayPush pushOf(std::string_view name, const ColourParams& colour) 
     const media::FrameDesc desc{
         .format = idOf(name), .colour = media::internColour(colour), .width = 33, .height = 17};
     const auto push = detail::toDisplayPush(desc.format, media::resolveColour(desc).params, 33, 17);
-    REQUIRE_MESSAGE(push.has_value(), push.error().describe());
+    REQUIRE_MESSAGE(push.has_value(), (push.has_value() ? std::string{} : push.error().describe()));
     return *push;
 }
 

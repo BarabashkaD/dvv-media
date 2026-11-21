@@ -1,7 +1,7 @@
 #pragma once
 
-// The scalar CPU reference (slow, obviously correct), spec §7.3: the ground truth for tests and the
-// CPU fallback (CpuUnpack, Task 8).
+// The scalar CPU reference (slow, obviously correct): the ground truth for tests and the CPU
+// fallback of the unpack.
 
 #include <array>
 #include <cstddef>
@@ -27,6 +27,9 @@ struct CodeValues {
 // samples beyond the width are 0. Errc::Internal for a value out of range or sizes that do not
 // match; geometry() errors are passed through.
 [[nodiscard]] Result<std::vector<std::byte>> pack(const CodeValues& values);
+// The same into `out`, which must hold exactly geometry().bytes (else Errc::Internal); `out` is
+// zero-filled first, so its old content never reaches the padding bits.
+[[nodiscard]] Result<void> pack(const CodeValues& values, std::span<std::byte> out);
 // Unpacks original bytes (at least geometry().bytes, tight layout) into code values.
 [[nodiscard]] Result<CodeValues> unpack(FormatId format, std::uint32_t width, std::uint32_t height,
                                         std::span<const std::byte> original);

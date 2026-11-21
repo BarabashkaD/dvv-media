@@ -28,7 +28,7 @@ media::FormatId idOf(std::string_view name) {
 detail::UnpackPush pushOf(std::string_view name, std::uint32_t width, std::uint32_t height,
                           std::size_t component, std::uint64_t base = 0) {
     const auto push = detail::unpackPush(idOf(name), width, height, component, base);
-    REQUIRE_MESSAGE(push.has_value(), push.error().describe());
+    REQUIRE_MESSAGE(push.has_value(), (push.has_value() ? std::string{} : push.error().describe()));
     return *push;
 }
 

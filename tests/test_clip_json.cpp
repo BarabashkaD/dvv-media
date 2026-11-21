@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "dvv/base/error.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
@@ -37,7 +38,8 @@ std::string refusal(std::string_view text) {
 
 media::ClipDescription accepted(std::string_view text) {
     auto parsed = media::parseClipJson(text, CLIP);
-    REQUIRE_MESSAGE(parsed.has_value(), parsed.error().message);
+    REQUIRE_MESSAGE(parsed.has_value(),
+                    (parsed.has_value() ? std::string{} : parsed.error().message));
     return std::move(*parsed);
 }
 
@@ -134,7 +136,7 @@ TEST_CASE("clip JSON: size and frame rate") {
 
 TEST_CASE("clip JSON: the top level") {
     CHECK(refusal(R"({"rawreelClip": 2, "format": "gray"})") ==
-          "rawreelClip: unsupported version 2 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 2 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": "1", "format": "gray"})") ==
           "rawreelClip: expected the integer 1");
     CHECK(refusal(R"({"format": "gray"})") == "missing key 'rawreelClip'");
@@ -179,13 +181,13 @@ TEST_CASE("clip JSON: version values") {
         CAPTURE(value);
         CHECK(refusal(std::string(R"({"rawreelClip": )") + std::string(value) +
                       R"(, "format": "gray"})") ==
-              "rawreelClip: unsupported version " + std::string(value) + " (this rawreel reads 1)");
+              "rawreelClip: unsupported version " + std::string(value) + " (dvv-media reads 1)");
     }
     // A non-integer number is a version too (a future writer's 2.0 is told it is unsupported).
     CHECK(refusal(R"({"rawreelClip": 1.0, "format": "gray"})") ==
-          "rawreelClip: unsupported version 1.0 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 1.0 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": 2.5, "format": "gray"})") ==
-          "rawreelClip: unsupported version 2.5 (this rawreel reads 1)");
+          "rawreelClip: unsupported version 2.5 (dvv-media reads 1)");
     CHECK(refusal(R"({"rawreelClip": true, "format": "gray"})") ==
           "rawreelClip: expected the integer 1");
 }
@@ -226,23 +228,24 @@ TEST_CASE("clip JSON: the small-file reader and loadClipJson") {
         std::ofstream file(path, std::ios::binary | std::ios::trunc);
         file << text;
         REQUIRE(file);
-        return media::utf8FromPath(path);
+        return dvv::pathText(path);
     };
     const std::string text = R"({"rawreelClip": 1, "format": "@f.json", "frameRate": 30})";
     const std::string clip = write("c.json", text);
     const auto read = media::readSmallFile(clip);
-    REQUIRE_MESSAGE(read.has_value(), read.error().describe());
+    REQUIRE_MESSAGE(read.has_value(), (read.has_value() ? std::string{} : read.error().describe()));
     CHECK(*read == text);
 
     const auto loaded = media::loadClipJson(clip);
-    REQUIRE_MESSAGE(loaded.has_value(), loaded.error().describe());
+    REQUIRE_MESSAGE(loaded.has_value(),
+                    (loaded.has_value() ? std::string{} : loaded.error().describe()));
     CHECK(loaded->fps == media::Rational{.num = 30, .den = 1});
-    std::string format = "@" + media::utf8FromPath(directory.path() / "f.json");
+    std::string format = "@" + dvv::pathText(directory.path() / "f.json");
     std::ranges::replace(format, '\\', '/');
     CHECK(loaded->format == format);
 
     // A missing file is Io; a file over 1 MiB is Format "'<file>' is too large".
-    const std::string missing = media::utf8FromPath(directory.path() / "missing.json");
+    const std::string missing = dvv::pathText(directory.path() / "missing.json");
     CHECK(media::readSmallFile(missing).error().code == dvv::Errc::Io);
     CHECK(media::loadClipJson(missing).error().code == dvv::Errc::Io);
     const std::string large = write("large.json", std::string((1U << 20U) + 1U, ' '));
@@ -253,5 +256,5 @@ TEST_CASE("clip JSON: the small-file reader and loadClipJson") {
     CHECK(media::loadClipJson(write("bad.json", "{"))
               .error()
               .message.starts_with("clip description '" +
-                                   media::utf8FromPath(directory.path() / "bad.json") + "': "));
+                                   dvv::pathText(directory.path() / "bad.json") + "': "));
 }

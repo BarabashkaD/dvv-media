@@ -1,6 +1,6 @@
 #pragma once
 
-// Frames (M2 design §4.4, spec §6.2): the IFrame interface, its bindings, the host memory frame,
+// Frames: the IFrame interface, its bindings, the host memory frame,
 // the GPU frames and the frame handle.
 
 #include <array>
@@ -12,14 +12,10 @@
 #include <variant>
 
 #include "dvv/base/lifetime.h"
+#include "dvv/gpu/gpu_fwd.h"  // GpuBuffer, GpuImage, MappedRead; includes nothing
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/file_reader.h"
-
-namespace dvv::gpu {
-class GpuBuffer;
-class GpuImage;
-}  // namespace dvv::gpu
+#include "dvv/platform/aligned_buffer.h"
 
 namespace dvv::media {
 
@@ -32,19 +28,32 @@ struct HostPlanesB {
     std::uint8_t planeCount = 0;
 };
 // The whole original in one buffer, tight.
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 struct VkBufferB {
+    // Deprecated (removed in 1.0.0): use vulkan::buffer(lease) (frame_vulkan.h).
     std::shared_ptr<gpu::GpuBuffer> buffer;
     std::uint64_t offset = 0;
     FrameGeometry geometry{};
 };
 // One image per unpacked component, layout GENERAL.
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 struct VkImageB {
+    // Deprecated (removed in 1.0.0): use vulkan::image(lease, plane) (frame_vulkan.h).
     std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
     std::uint8_t planeCount = 0;
 };
+// Deprecated (removed in 1.0.0): reading a Binding with std::get_if, std::get, std::visit or
+// std::holds_alternative; use bindingIf<B> or Lease::planes(). Binding becomes a class in 1.0.0.
 using Binding = std::variant<HostPlanesB, VkBufferB, VkImageB>;  // + AvFrameB in M4
 
-// Spec §6.2.
+// The binding as B, or null when it holds another kind. The one way to read a Binding that
+// works in 0.2.x and 1.0.0.
+template <class B>
+[[nodiscard]] const B* bindingIf(const Binding& binding) noexcept {
+    return std::get_if<B>(&binding);
+}
+
+// A frame: its description, its native views and the binding of each view.
 class IFrame {
 public:
     virtual ~IFrame() = default;
@@ -86,14 +95,23 @@ private:
 
 // A frame in one host-visible GpuBuffer holding the tight layout of `format` (desc.format or
 // unpackedFormat(desc.format)) at offset 0. Native views (format, desc.colour, Tight, domain):
-// - HostReadback memory (made by Readback): HostPlanes and VkBuffer, the same bytes (one store
-//   entry, counted once);
+// - HostReadback memory (made by Readback) with its read scope: HostPlanes and VkBuffer, the same
+//   bytes (one store entry, counted once); without a scope: VkBuffer only (no empty planes);
 // - HostUpload memory (made by HostToStaging): VkBuffer only (the CPU never reads write-combined
 //   memory).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class StagingFrame final : public IFrame, public Managed<StagingFrame> {
 public:
+    // `host_read`: the read scope of `buffer` for HostReadback memory (made by mapRead() after
+    // the GPU copy completed); null for HostUpload memory. The HostPlanes view is offered only
+    // when it is set.
     StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format, Domain domain,
-                 std::shared_ptr<gpu::GpuBuffer> buffer, FrameGeometry geometry) noexcept;
+                 std::shared_ptr<gpu::GpuBuffer> buffer, FrameGeometry geometry,
+                 std::unique_ptr<gpu::MappedRead> host_read) noexcept;  // frames.cpp
+    ~StagingFrame() override;                                           // frames.cpp
+    // Both are defined in frames.cpp, where MappedRead is complete: destroying the by-value
+    // parameter and the member needs the complete type.
+    // Deprecated (removed in 1.0.0): use vulkan::buffer(lease) (frame_vulkan.h).
     [[nodiscard]] const std::shared_ptr<gpu::GpuBuffer>& buffer() const noexcept { return buffer_; }
     [[nodiscard]] const FrameDesc& desc() const noexcept override { return desc_; }
     [[nodiscard]] std::span<const ViewSpec> nativeViews() const noexcept override;
@@ -106,10 +124,13 @@ private:
     FrameGeometry geometry_;
     std::array<ViewSpec, 2> views_{};
     std::uint8_t view_count_ = 0;
+    // A scope of buffer_: declared after it, so it is destroyed first.
+    std::unique_ptr<gpu::MappedRead> host_read_;
 };
 
-// The original in a DeviceOnly buffer, padded for the GPU unpack (M2 design §5.4). One native view:
-// (desc.format, desc.colour, Tight, VkBuffer, domain DeviceLocal).
+// The original in a DeviceOnly buffer, padded for the GPU unpack. One native view:
+// (desc.format, desc.colour, Tight, vulkan::BUFFER, domain DeviceLocal).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkBufferFrame final : public IFrame, public Managed<VkBufferFrame> {
 public:
     VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain domain,
@@ -128,8 +149,9 @@ private:
 
 // Device images, layout GENERAL: the unpacked planes (D5, one R8_UINT/R16_UINT image per
 // component, colour desc.colour) or the display image (M3 D3, one RGBA16F image, format
-// displayFormat(), colour displayColour()). One native view: (format, colour, VkOptimal, VkImage,
-// domain DeviceLocal).
+// displayFormat(), colour displayColour()). One native view: (format, colour, Opaque,
+// vulkan::IMAGE, domain DeviceLocal).
+// Moves to dvv/media/frame_vulkan.h in 1.0.0; include that header where you name it.
 class VkPlanesFrame final : public IFrame, public Managed<VkPlanesFrame> {
 public:
     VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format, ColourId colour,
@@ -148,7 +170,7 @@ private:
     std::size_t bytes_ = 0;
 };
 
-// Handle: key + desc + store (§6.2).
+// Handle: key + desc + store.
 struct FrameRef {
     FrameKey key;
     FrameDesc desc;

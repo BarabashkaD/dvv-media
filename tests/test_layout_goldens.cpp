@@ -204,7 +204,7 @@ media::FormatId idOf(std::string_view name) {
 media::CodeValues goldenValues(const Golden& golden) {
     media::CodeValues values{
         .format = idOf(golden.format), .width = golden.width, .height = golden.height};
-    const media::PixelFormatDescriptor& d = media::descriptor(values.format);
+    const media::PixelFormatDesc& d = media::formatDesc(values.format);
     for (std::size_t c = 0; c < d.componentCount; ++c) {
         const auto [cw, ch] = media::componentSize(values.format, c, golden.width, golden.height);
         std::vector<std::uint16_t>& component = values.components[c];
@@ -249,7 +249,7 @@ TEST_CASE("every format has a layout golden") {
     }
     std::set<std::string_view> catalogue_names;
     for (const media::FormatId id : media::catalogue()) {
-        catalogue_names.insert(media::descriptor(id).name);
+        catalogue_names.insert(media::formatDesc(id).name);
     }
     CHECK(catalogue_names.size() == 37);
     CHECK(golden_names == catalogue_names);

@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "converters.h"
@@ -27,10 +28,11 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
-#include "dvv/platform/file_reader.h"
+#include "dvv/platform/aligned_buffer.h"
 #include "planner.h"
 #include "store_state.h"
 
@@ -41,11 +43,16 @@ namespace {
 // The device tier's budget in a store with a fake device domain and deviceBudget 0.
 constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 
-[[nodiscard]] std::string_view apiName(Api api) noexcept {
-    switch (api) {
-        case Api::HostPlanes: return "HostPlanes";
-        case Api::VkBuffer: return "VkBuffer";
-        case Api::VkImage: return "VkImage";
+// A binding kind is compared with == only (types.h).
+[[nodiscard]] std::string_view apiName(BindingKind api) noexcept {
+    if (api == Api::HostPlanes) {
+        return "HostPlanes";
+    }
+    if (api == vulkan::BUFFER) {
+        return "VkBuffer";
+    }
+    if (api == vulkan::IMAGE) {
+        return "VkImage";
     }
     return "?";
 }
@@ -64,7 +71,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
         case LayoutPolicy::Any: return "Any";
         case LayoutPolicy::Tight: return "Tight";
         case LayoutPolicy::RowAlign256: return "RowAlign256";
-        case LayoutPolicy::VkOptimal: return "VkOptimal";
+        case LayoutPolicy::Opaque: return "Opaque";
     }
     return "?";
 }
@@ -72,7 +79,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 // "gray@planes (HostPlanes, Host, Any)" for messages.
 [[nodiscard]] std::string viewText(const ViewSpec& view) {
     std::string text =
-        std::format("{} ({}, {}, {}", descriptor(view.format).name, apiName(view.api),
+        std::format("{} ({}, {}, {}", formatDesc(view.format).name, apiName(view.api),
                     kindName(view.domain.kind), layoutName(view.layout));
     if (view.downscaleLog2 != 0) {
         text += std::format(", downscale log2 {}", static_cast<unsigned>(view.downscaleLog2));
@@ -124,13 +131,18 @@ void trimForRetry(FrameStore& store, const detail::StoreState& s, std::size_t ti
     store.trim(s.tiers[tier].domain, s.tiers[tier].budget / 2);
 }
 
+// The error of a step whose origin was detached.
+Error detachedError() {
+    return makeError(Errc::Cancelled, "the origin was detached").error();
+}
+
 }  // namespace
 
 // ---- ProduceContext ----
 
-ProduceContext::ProduceContext(FrameStore& store, FrameKey key, FrameDesc desc,
-                               IExecutor& io) noexcept
-    : store_(&store), key_(key), desc_(desc), io_(&io) {}
+ProduceContext::ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key,
+                               FrameDesc desc, IExecutor& io, std::stop_token stop) noexcept
+    : store_(&store), output_(&output), key_(key), desc_(desc), io_(&io), stop_(std::move(stop)) {}
 
 Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc& desc,
                                                                 std::size_t capacity,
@@ -149,20 +161,39 @@ Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc&
                                      "do not fit into {} bytes",
                                      key_.index, key_.origin, layout.bytes, data_offset, capacity));
     }
-    const detail::StoreState& s = *store_->state_;
+    detail::StoreState& s = *store_->state_;
+    detail::Entry& output = *output_;
+    // Reserved before the allocation, so the eviction to the budget (bytes + pending) lowers the
+    // peak. The evicted entries are released after unlocking.
+    const auto reserve = [&] {
+        std::vector<std::shared_ptr<detail::Entry>> dropped;
+        const std::scoped_lock lock(s.mutex);
+        store_->reserveLocked(output, capacity);
+        store_->evictLocked(output.tier, s.tiers[output.tier].budget, dropped);
+    };
+    // Settles this call's reservation only: a source may hold another allocation of the step.
+    const auto settle = [&] {
+        const std::scoped_lock lock(s.mutex);
+        store_->settleLocked(output, capacity);
+    };
+    reserve();
     Result<platform::AlignedBuffer> allocated = s.hostAllocator(capacity, alignment);
     if (!allocated && allocated.error().code == Errc::OutOfMemory) {
-        // D10: evict the host tier to half its budget, then allocate once more.
-        trimForRetry(*store_, s, 0);
+        // D10: evict the host tier to half its budget, then allocate once more. The failed
+        // allocation is settled first and the retry reserves again, so it never counts twice.
+        settle();
+        trimForRetry(*store_, s, output.tier);
+        reserve();
         allocated = s.hostAllocator(capacity, alignment);
+    }
+    if (!allocated) {
+        settle();
     }
     DVV_TRY(platform::AlignedBuffer buffer, std::move(allocated));
     const ViewSpec view{desc.format,     desc.colour,          LayoutPolicy::Tight,
                         Api::HostPlanes, store_->hostDomain(), 0};
-    auto frame = std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()),
-                                             desc, view, std::move(buffer), capacity, data_offset);
-    evictOverBudget(*store_, s);
-    return frame;
+    return std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()), desc,
+                                       view, std::move(buffer), capacity, data_offset);
 }
 
 Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
@@ -196,9 +227,11 @@ Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
 
 // ---- Leases ----
 
-ReadLease::ReadLease(ReadLease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
+template <LeaseKind K>
+Lease<K>::Lease(Lease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
 
-ReadLease& ReadLease::operator=(ReadLease&& other) noexcept {
+template <LeaseKind K>
+Lease<K>& Lease<K>::operator=(Lease&& other) noexcept {
     if (this != &other) {
         reset();
         core_ = std::exchange(other.core_, {});
@@ -206,11 +239,13 @@ ReadLease& ReadLease::operator=(ReadLease&& other) noexcept {
     return *this;
 }
 
-ReadLease::~ReadLease() {
+template <LeaseKind K>
+Lease<K>::~Lease() {
     reset();
 }
 
-void ReadLease::reset() noexcept {
+template <LeaseKind K>
+void Lease<K>::reset() noexcept {
     if (core_.store) {
         core_.store->releaseLease(core_);
     }
@@ -219,54 +254,38 @@ void ReadLease::reset() noexcept {
     core_.store.reset();  // last: may destroy the store
 }
 
-const FrameKey& ReadLease::key() const noexcept {
+template <LeaseKind K>
+const FrameKey& Lease<K>::key() const noexcept {
     return core_.entry->key;
 }
-const FrameDesc& ReadLease::desc() const noexcept {
+template <LeaseKind K>
+const FrameDesc& Lease<K>::desc() const noexcept {
     return core_.entry->desc;
 }
-Fidelity ReadLease::fidelity() const noexcept {
+template <LeaseKind K>
+Fidelity Lease<K>::fidelity() const noexcept {
     return core_.entry->fidelity;
 }
-SyncPoint ReadLease::ready() const noexcept {
+template <LeaseKind K>
+SyncPoint Lease<K>::ready() const noexcept {
     return core_.entry->ready;
 }
-
-PinLease::PinLease(PinLease&& other) noexcept : core_(std::exchange(other.core_, {})) {}
-
-PinLease& PinLease::operator=(PinLease&& other) noexcept {
-    if (this != &other) {
-        reset();
-        core_ = std::exchange(other.core_, {});
+template <LeaseKind K>
+const HostPlanesB* Lease<K>::planes() const noexcept {
+    // An empty lease holds a default Binding, which is an empty HostPlanesB.
+    return *this ? std::get_if<HostPlanesB>(&core_.binding) : nullptr;
+}
+template <LeaseKind K>
+Lease<K> Lease<K>::share(std::source_location where) const {
+    if (!*this) {
+        return Lease{};
     }
-    return *this;
+    return Lease(core_.store->shareLease(core_, where));
 }
 
-PinLease::~PinLease() {
-    reset();
-}
-
-void PinLease::reset() noexcept {
-    if (core_.store) {
-        core_.store->releaseLease(core_);
-    }
-    core_.binding = {};
-    core_.entry.reset();  // may free the frame: after unlocking
-    core_.store.reset();  // last: may destroy the store
-}
-
-const FrameKey& PinLease::key() const noexcept {
-    return core_.entry->key;
-}
-const FrameDesc& PinLease::desc() const noexcept {
-    return core_.entry->desc;
-}
-Fidelity PinLease::fidelity() const noexcept {
-    return core_.entry->fidelity;
-}
-SyncPoint PinLease::ready() const noexcept {
-    return core_.entry->ready;
-}
+// Every member defined outside the class is defined above these lines (MSVC C4661).
+template class Lease<LeaseKind::Read>;
+template class Lease<LeaseKind::Pin>;
 
 // ---- Creation ----
 
@@ -281,7 +300,16 @@ FrameStore::FrameStore(CreationKey<FrameStore> key, FrameStoreOptions options) n
     }
 }
 
-FrameStore::~FrameStore() = default;
+// No acquire holds the store now, so this reaches only work a source started outside the store.
+// Nothing else holds the state: no lock.
+FrameStore::~FrameStore() {
+    if (!state_) {
+        return;
+    }
+    for (auto& entry : state_->origins) {
+        entry.second.stop.request_stop();
+    }
+}
 
 Result<std::shared_ptr<FrameStore>> FrameStore::create(FrameStoreOptions options,
                                                        std::source_location where) {
@@ -445,7 +473,7 @@ Result<OriginId> FrameStore::attach(std::shared_ptr<ISource> source) {
     const FormatId unpacked = unpackedFormat(desc.format);
     detail::StoreState& s = *state_;
     // Declared before the lock: if emplace throws, the source is released after unlocking.
-    detail::Origin origin{std::move(source), desc, unpacked};
+    detail::Origin origin{std::move(source), desc, unpacked, std::stop_source{}};
     const std::scoped_lock lock(s.mutex);
     const OriginId id = s.nextOrigin;
     s.origins.emplace(id, std::move(origin));
@@ -458,38 +486,46 @@ void FrameStore::detach(OriginId origin) {
     // Released after unlocking.
     std::vector<std::shared_ptr<detail::Entry>> dropped;
     std::shared_ptr<ISource> source;
-    const std::scoped_lock lock(s.mutex);
-    std::size_t count = 0;
-    for (const auto& [key, record] : s.records) {
-        if (key.origin == origin) {
-            count += record.entries.size();
-        }
-    }
-    dropped.reserve(count);  // push_back below cannot throw
-    if (const auto found = s.origins.find(origin); found != s.origins.end()) {
-        source = std::move(found->second.source);
-        s.origins.erase(found);
-    }
-    for (auto record = s.records.begin(); record != s.records.end();) {
-        if (record->first.origin != origin) {
-            ++record;
-            continue;
-        }
-        for (std::shared_ptr<detail::Entry>& entry : record->second.entries) {
-            detail::Tier& tier = s.tiers[entry->tier];
-            if (entry->linked) {
-                tier.lru.erase(entry->lruPosition);
-                entry->linked = false;
+    // Stopped after unlocking: the stop callbacks run on this thread and may call the store.
+    std::stop_source stop{std::nostopstate};
+    {
+        const std::scoped_lock lock(s.mutex);
+        std::size_t count = 0;
+        for (const auto& [key, record] : s.records) {
+            if (key.origin == origin) {
+                count += record.entries.size();
             }
-            if (entry->counted) {
-                tier.bytes -= entry->bytes;
-                entry->counted = false;
-            }
-            entry->inRecord = false;
-            dropped.push_back(std::move(entry));
         }
-        record = s.records.erase(record);
+        dropped.reserve(count);  // push_back below cannot throw
+        if (const auto found = s.origins.find(origin); found != s.origins.end()) {
+            source = std::move(found->second.source);
+            stop = std::move(found->second.stop);
+            s.origins.erase(found);
+        }
+        for (auto record = s.records.begin(); record != s.records.end();) {
+            if (record->first.origin != origin) {
+                ++record;
+                continue;
+            }
+            for (std::shared_ptr<detail::Entry>& entry : record->second.entries) {
+                detail::Tier& tier = s.tiers[entry->tier];
+                if (entry->linked) {
+                    tier.lru.erase(entry->lruPosition);
+                    entry->linked = false;
+                }
+                if (entry->counted) {
+                    tier.bytes -= entry->bytes;
+                    entry->counted = false;
+                }
+                // A running step keeps its reservation (its memory is alive) until it returns.
+                tier.detachedReserved += entry->reserved;
+                entry->inRecord = false;
+                dropped.push_back(std::move(entry));
+            }
+            record = s.records.erase(record);
+        }
     }
+    stop.request_stop();  // no effect for an unknown origin (no stop state)
 }
 
 // ---- Acquire ----
@@ -519,6 +555,19 @@ Task<Result<PinLease>> FrameStore::pin(FrameKey key, ViewSpec view, IExecutor& r
 Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, Api api, Domain domain,
                                                        IExecutor& resume_on, bool require_exact,
                                                        std::source_location where) {
+    // A coroutine forwarder would copy the arguments into a second frame; this one returns the
+    // lazy task of the request form.
+    return acquireOriginal(
+        key,
+        {.api = api,
+         .domain = domain,
+         .fidelity = require_exact ? OriginalFidelity::Exact : OriginalFidelity::Lossless},
+        resume_on, where);
+}
+
+Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, OriginalRequest request,
+                                                       IExecutor& resume_on,
+                                                       std::source_location where) {
     const std::shared_ptr<FrameStore> self = shared_from_this();  // the store outlives the call
     std::optional<FrameDesc> desc;
     {
@@ -539,8 +588,9 @@ Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, Api api, Do
                                         "original",
                                         key.index, key.origin));
     }
-    const ViewSpec want =
-        require_exact ? originalView(*desc, api, domain) : planesView(*desc, api, domain);
+    const ViewSpec want = request.fidelity == OriginalFidelity::Exact
+                              ? originalView(*desc, request.api, request.domain)
+                              : planesView(*desc, request.api, request.domain);
     Result<ReadLease> lease =
         co_await acquire(key, want, resume_on, where);  // resumes on resume_on
     if (!lease) {
@@ -616,6 +666,25 @@ detail::LeaseCore FrameStore::finishLease(std::shared_ptr<detail::Entry> entry, 
             .kind = kind};
 }
 
+// finishLease's steps for a lease that already holds its entry: no reader was reserved, and the
+// view and binding are the lease's own.
+detail::LeaseCore FrameStore::shareLease(const detail::LeaseCore& core,
+                                         std::source_location where) {
+    detail::LeaseCore shared = core;  // copied before anything is counted
+    detail::Entry& entry = *shared.entry;
+    const std::scoped_lock lock(state_->mutex);
+    shared.id = state_->nextLease;
+    state_->leases.emplace(shared.id, LeaseInfo{entry.key, shared.view, shared.kind, where});
+    if (shared.kind == LeaseKind::Pin) {
+        ++entry.pins;
+    } else {
+        ++entry.readers;
+    }
+    ++state_->nextLease;
+    touchLocked(entry);
+    return shared;
+}
+
 Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const ViewSpec& want,
                                                    LeaseKind /*kind*/) {
     detail::StoreState& s = *state_;
@@ -685,7 +754,7 @@ Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const Vi
 Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record& record,
                                             const ViewSpec& want) {
     detail::StoreState& s = *state_;
-    const std::string_view original = descriptor(record.desc.format).name;
+    const std::string_view original = formatDesc(record.desc.format).name;
     const std::optional<detail::StateKey> target = stateOf(record, s.tiers, want);
     if (!target) {
         return makeError(Errc::Unsupported,
@@ -721,8 +790,10 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
         }
     }
     std::shared_ptr<ISource> source;
+    std::stop_token stop;  // never stops without an origin
     if (const auto origin = s.origins.find(key.origin); origin != s.origins.end()) {
         source = origin->second.source;
+        stop = origin->second.stop.get_token();
     }
     if (source && !has_root) {
         DVV_TRY(const FrameGeometry frame,
@@ -786,6 +857,7 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
     };
 
     detail::Plan plan;
+    plan.stop = std::move(stop);  // Produce and converter plans alike
     Fidelity fidelity = Fidelity::Exact;
     if (start) {
         plan.start = start;
@@ -828,24 +900,75 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
             // Another acquire makes the input: wait for it on the CPU executor.
             const Result<void> joined = co_await detail::JoinAwaiter(s, input, *s.options.cpu);
             if (!joined) {
-                failSteps(plan, 0, joined.error());
-                co_return std::unexpected(joined.error());
+                const bool cancelled = plan.stop.stop_requested();
+                const Error error = cancelled ? detachedError() : joined.error();
+                failSteps(plan, 0, error, cancelled);
+                co_return std::unexpected(error);
             }
         }
         for (std::size_t index = 0; index < plan.steps.size(); ++index) {
             detail::Step& step = plan.steps[index];
+            if (plan.stop.stop_requested()) {
+                // The origin was detached before this step: it and the rest are cancelled.
+                const Error error = detachedError();
+                std::vector<detail::Waiter*> woken;
+                {
+                    const std::scoped_lock lock(s.mutex);
+                    if (input) {
+                        releaseReaderLocked(*input);
+                    }
+                    failStepsLocked(plan, index, error, woken, true);
+                }
+                wake(woken);
+                co_return std::unexpected(error);
+            }
+            // The step's runs and their time count only when the step ends not cancelled (below).
+            const std::size_t slot = step.converter == nullptr ? 0 : slotOf(*step.converter);
+            std::uint64_t runs = 1;
+            auto started = std::chrono::steady_clock::now();
             Result<std::shared_ptr<IFrame>> made = co_await runStep(plan, step, input, input_view);
-            if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory) {
+            auto elapsed = std::chrono::steady_clock::now() - started;
+            if (step.converter != nullptr && !made && made.error().code == Errc::OutOfMemory &&
+                !plan.stop.stop_requested()) {
                 // D10: evict the output's tier to half its budget, then run the step once more.
-                // (Produce is not retried here: allocateHost already retried.)
+                // (Produce is not retried here: allocateHost already retried.) The failed run's
+                // reservation is settled first and the retry's runStep reserves again, so the
+                // retry never holds two and the trim sees the real figure.
+                {
+                    const std::scoped_lock lock(s.mutex);
+                    settleLocked(*step.output);
+                }
                 trimForRetry(*this, s, step.output->tier);
+                ++runs;
+                started = std::chrono::steady_clock::now();
                 made = co_await runStep(plan, step, input, input_view);
+                elapsed += std::chrono::steady_clock::now() - started;
             }
             std::vector<detail::Waiter*> woken;
             std::optional<Error> error;
+            bool cancelled = false;
             {
                 const std::scoped_lock lock(s.mutex);
-                if (made) {
+                settleLocked(*step.output);  // published or failed: no longer being made
+                // One read decides both: a cancelled step counts in no counter.
+                const bool stopped = plan.stop.stop_requested();
+                if (!stopped) {
+                    detail::ConverterSlot& counters = *s.slots[slot];
+                    counters.runs.fetch_add(runs, std::memory_order_relaxed);
+                    if (made && *made) {
+                        counters.bytes.fetch_add((*made)->bytes(), std::memory_order_relaxed);
+                    }
+                    counters.nanoseconds.fetch_add(
+                        static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()),
+                        std::memory_order_relaxed);
+                }
+                if (stopped) {
+                    // A step whose origin was detached when it ends is cancelled, whatever it
+                    // returned. A made frame stays in `made` and is released after unlocking.
+                    cancelled = true;
+                    error = detachedError();
+                } else if (made) {
                     // On failure the frame stays in `made` and is released after unlocking.
                     if (Result<void> published = publishLocked(*step.output, *made, woken);
                         !published) {
@@ -858,7 +981,7 @@ Task<Result<void>> FrameStore::runPlan(detail::Plan plan) noexcept {
                     releaseReaderLocked(*input);  // the step is done with its input
                 }
                 if (error) {
-                    failStepsLocked(plan, index, *error, woken);
+                    failStepsLocked(plan, index, *error, woken, cancelled);
                 }
             }
             wake(woken);
@@ -879,15 +1002,21 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
                                                           std::shared_ptr<detail::Entry> input,
                                                           ViewSpec input_view) {
     detail::StoreState& s = *state_;
-    const std::size_t slot = step.converter == nullptr ? 0 : slotOf(*step.converter);
-    const auto started = std::chrono::steady_clock::now();
     Result<std::shared_ptr<IFrame>> made = makeError(Errc::Internal, "not run");
     const std::string_view name =
         step.converter == nullptr ? std::string_view("Produce") : step.converter->name();
     try {
         if (step.converter == nullptr) {
             co_await resumeOn(*s.options.cpu);  // D12: the hop before every Produce
-            ProduceContext context(*this, step.output->key, step.output->desc, *s.options.io);
+        }
+        if (plan.stop.stop_requested()) {
+            // Detached while the step was queued: neither the source nor the converter is
+            // called, and no counter counts the step.
+            co_return std::unexpected(detachedError());
+        }
+        if (step.converter == nullptr) {
+            ProduceContext context(*this, *step.output, step.output->key, step.output->desc,
+                                   *s.options.io, plan.stop);
             const Result<FrameRef> produced =
                 co_await plan.source->produce(step.output->key.index, context);
             if (!produced) {
@@ -900,6 +1029,14 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
                 made = std::move(context.frame_);
             }
         } else {
+            {
+                // The output counts in its tier until runPlan settles it; the eviction keeps
+                // bytes + pending under the budget. Evicted entries are released after unlocking.
+                std::vector<std::shared_ptr<detail::Entry>> dropped;
+                const std::scoped_lock lock(s.mutex);
+                reserveLocked(*step.output, step.converter->outputBytes(step.output->desc));
+                evictLocked(step.output->tier, s.tiers[step.output->tier].budget, dropped);
+            }
             const Binding input_binding = input->frame->bind(input_view);
             made = co_await step.converter->run(
                 detail::ConvertInput{input->key, input->desc, input_view, *input->frame,
@@ -912,17 +1049,7 @@ Task<Result<std::shared_ptr<IFrame>>> FrameStore::runStep(const detail::Plan& pl
     } catch (...) {
         made = makeError(Errc::Internal, std::format("{} threw", name));
     }
-    detail::ConverterSlot& counters = *s.slots[slot];
-    counters.runs.fetch_add(1, std::memory_order_relaxed);
-    if (made && *made) {
-        counters.bytes.fetch_add((*made)->bytes(), std::memory_order_relaxed);
-    }
-    counters.nanoseconds.fetch_add(
-        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       std::chrono::steady_clock::now() - started)
-                                       .count()),
-        std::memory_order_relaxed);
-    co_return made;
+    co_return made;  // runPlan counts the step's runs when it decides the step was not cancelled
 }
 
 // Publishes a step's output: checks the frame, records it, reserves one reader for the plan (its
@@ -972,9 +1099,9 @@ Result<void> FrameStore::publishLocked(detail::Entry& entry, std::shared_ptr<IFr
 }
 
 // Fails the pending outputs from step `from` on: their waiters get the error; the entries leave
-// the index (failures are not cached).
+// the index (failures are not cached). Cancelled steps do not count in failures.
 void FrameStore::failStepsLocked(detail::Plan& plan, std::size_t from, const Error& error,
-                                 std::vector<detail::Waiter*>& woken) {
+                                 std::vector<detail::Waiter*>& woken, bool cancelled) {
     for (std::size_t index = from; index < plan.steps.size(); ++index) {
         detail::Entry& entry = *plan.steps[index].output;
         if (entry.state != detail::EntryState::Pending) {
@@ -988,15 +1115,18 @@ void FrameStore::failStepsLocked(detail::Plan& plan, std::size_t from, const Err
         }
         entry.waiters.clear();
         static_cast<void>(removeFromIndexLocked(entry));  // the plan still holds the entry
-        ++state_->counters.failures;
+        if (!cancelled) {
+            ++state_->counters.failures;
+        }
     }
 }
 
-void FrameStore::failSteps(detail::Plan& plan, std::size_t from, const Error& error) {
+void FrameStore::failSteps(detail::Plan& plan, std::size_t from, const Error& error,
+                           bool cancelled) {
     std::vector<detail::Waiter*> woken;
     {
         const std::scoped_lock lock(state_->mutex);
-        failStepsLocked(plan, from, error, woken);
+        failStepsLocked(plan, from, error, woken, cancelled);
     }
     wake(woken);
 }
@@ -1029,6 +1159,8 @@ void FrameStore::touchLocked(detail::Entry& entry) noexcept {
 // Takes the entry out of the index: LRU, tier bytes, record (erased when empty). Returns the
 // record's reference to it, for release after unlocking (null when it was not in a record).
 std::shared_ptr<detail::Entry> FrameStore::removeFromIndexLocked(detail::Entry& entry) noexcept {
+    // Evicted entries are published and failed ones settled first (runPlan): none is reserved.
+    assert(entry.reserved == 0 && "an entry leaves the index with a reservation");
     detail::StoreState& s = *state_;
     detail::Tier& tier = s.tiers[entry.tier];
     if (entry.linked) {
@@ -1059,17 +1191,19 @@ std::shared_ptr<detail::Entry> FrameStore::removeFromIndexLocked(detail::Entry& 
     return owned;
 }
 
-// Evicts unleased, unpinned entries of a tier until it holds at most `target` bytes: Derived
-// entries first, then Lossless, then Exact, each pass least recently used first (§5.2).
+// Evicts unleased, unpinned entries of a tier until bytes + pending <= `target`: Derived entries
+// first, then Lossless, then Exact, each pass least recently used first (§5.2). When pending alone
+// exceeds the target, every unleased entry of the tier goes.
 void FrameStore::evictLocked(std::size_t tier_index, std::size_t target,
                              std::vector<std::shared_ptr<detail::Entry>>& dropped) {
     detail::Tier& tier = state_->tiers[tier_index];
-    if (tier.bytes <= target) {
+    const auto over = [&tier, target] { return tier.bytes + tier.pending > target; };
+    if (!over()) {
         return;
     }
     dropped.reserve(dropped.size() + tier.lru.size());  // push_back below cannot throw
     for (const Fidelity pass : {Fidelity::Derived, Fidelity::Lossless, Fidelity::Exact}) {
-        for (auto position = tier.lru.begin(); position != tier.lru.end() && tier.bytes > target;) {
+        for (auto position = tier.lru.begin(); position != tier.lru.end() && over();) {
             detail::Entry& entry = **position;
             ++position;  // removal invalidates only the removed entry's iterator
             if (entry.fidelity == pass && entry.readers == 0 && entry.pins == 0) {
@@ -1077,6 +1211,31 @@ void FrameStore::evictLocked(std::size_t tier_index, std::size_t target,
                 ++state_->counters.evictions;
             }
         }
+    }
+}
+
+// ---- Reservations ----
+
+void FrameStore::reserveLocked(detail::Entry& output, std::size_t bytes) noexcept {
+    detail::Tier& tier = state_->tiers[output.tier];
+    tier.pending += bytes;
+    output.reserved += bytes;
+    if (!output.inRecord) {
+        tier.detachedReserved += bytes;  // detach took the entry out of the index earlier
+    }
+}
+
+void FrameStore::settleLocked(detail::Entry& output) noexcept {
+    settleLocked(output, output.reserved);
+}
+
+void FrameStore::settleLocked(detail::Entry& output, std::size_t bytes) noexcept {
+    detail::Tier& tier = state_->tiers[output.tier];
+    const std::size_t settled = std::min(bytes, output.reserved);
+    tier.pending -= settled;
+    output.reserved -= settled;
+    if (!output.inRecord) {
+        tier.detachedReserved -= settled;
     }
 }
 
@@ -1234,7 +1393,8 @@ StoreStats FrameStore::stats() const {
         stats.tiers.push_back(TierStats{.domain = tier.domain,
                                         .bytes = tier.bytes,
                                         .budget = tier.budget,
-                                        .views = tier.lru.size()});
+                                        .views = tier.lru.size(),
+                                        .pending = tier.pending});
         stats.frames += tier.lru.size();  // linked = published and in the index
     }
     for (const auto& [id, info] : s.leases) {
@@ -1303,6 +1463,7 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
     const std::scoped_lock lock(s.mutex);
     std::vector<std::size_t> sums(s.tiers.size(), 0);
     std::vector<std::size_t> linked(s.tiers.size(), 0);
+    std::vector<std::size_t> reserved(s.tiers.size(), 0);
     for (const auto& [key, record] : s.records) {
         const std::string where = std::format("frame {} of origin {}", key.index, key.origin);
         if (record.entries.empty()) {
@@ -1333,6 +1494,7 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
             if (entry->counted) {
                 sums[entry->tier] += entry->bytes;
             }
+            reserved[entry->tier] += entry->reserved;
             const bool published = entry->state == EntryState::Published;
             if (entry->linked) {
                 ++linked[entry->tier];
@@ -1370,6 +1532,15 @@ Result<void> StoreAccess::checkInvariants(const FrameStore& store) {
             return makeError(Errc::Internal,
                              std::format("tier {}: {} bytes counted but entries of {} bytes", index,
                                          tier.bytes, sums[index]));
+        }
+        // Entries that detach took out of the index keep their reservation until their step
+        // returns: they are the detached part.
+        if (reserved[index] + tier.detachedReserved != tier.pending) {
+            return makeError(
+                Errc::Internal,
+                std::format("tier {}: {} bytes pending but {} reserved by indexed "
+                            "entries and {} by detached ones",
+                            index, tier.pending, reserved[index], tier.detachedReserved));
         }
         if (linked[index] != tier.lru.size()) {
             return makeError(Errc::Internal,
@@ -1415,6 +1586,23 @@ std::vector<std::pair<ViewSpec, Fidelity>> StoreAccess::views(const FrameStore& 
         }
     }
     return views;
+}
+
+std::optional<std::size_t> StoreAccess::bytesOf(const FrameStore& store, const FrameKey& key,
+                                                const ViewSpec& view) {
+    const StoreState& s = *store.state_;
+    const std::scoped_lock lock(s.mutex);
+    const auto record = s.records.find(key);
+    if (record == s.records.end()) {
+        return std::nullopt;
+    }
+    for (const auto& entry : record->second.entries) {
+        if (entry->state == EntryState::Published &&
+            std::ranges::find(entry->views, view) != entry->views.end()) {
+            return entry->bytes;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace dvv::media::detail

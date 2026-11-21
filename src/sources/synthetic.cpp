@@ -26,6 +26,7 @@
 #include "dvv/base/uri.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
@@ -33,7 +34,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 #include "patterns.h"
 #include "sources/uri_params.h"
 
@@ -46,7 +46,6 @@ constexpr std::array<std::string_view, 7> OWN_PARAMETERS{"fmt", "size",   "w",  
                                                          "fps", "frames", "seed"};
 constexpr auto ALLOWED = detail::withColourParameters(OWN_PARAMETERS);
 
-constexpr Rational DEFAULT_FPS{25, 1};
 constexpr std::uint64_t DEFAULT_FRAMES = 10;
 constexpr std::uint64_t DEFAULT_SEED = 1;
 constexpr auto MAX_FRAMES = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
@@ -98,9 +97,9 @@ Result<Parsed> parse(const Uri& uri) {
     const auto [width, height] = *size;
     DVV_TRY_VOID(geometry(format, width, height).transform([](const FrameGeometry&) {}));
 
-    Rational fps = DEFAULT_FPS;
+    Rational fps = FALLBACK_FPS;
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(fps, detail::parseFps(*text));
+        DVV_TRY(fps, parseFps(*text));
     }
     std::uint64_t frames = DEFAULT_FRAMES;
     if (const auto text = uri.param("frames")) {
@@ -114,14 +113,16 @@ Result<Parsed> parse(const Uri& uri) {
         DVV_TRY(parsed.seed, detail::parseUnsigned("seed", *text));
     }
     DVV_TRY(const ColourSpec colour_spec, colourSpecFromQuery(uri));
-    const ColourParams colour = merged(colour_spec, descriptor(format).model);
+    const ColourParams colour = merged(colour_spec, formatDesc(format).model);
 
     Uri resolved;
     resolved.scheme = "synthetic";
     resolved.path = uri.path;
     resolved.params = {
-        {"fmt", descriptor(format).name},         {"size", std::format("{}x{}", width, height)},
-        {"fps", detail::formatFps(fps)},          {"frames", std::format("{}", frames)},
+        {"fmt", formatDesc(format).name},
+        {"size", std::format("{}x{}", width, height)},
+        {"fps", formatFps(fps)},
+        {"frames", std::format("{}", frames)},
         {"seed", std::format("{}", parsed.seed)},
     };
     std::ranges::move(colourParameters(colour_spec), std::back_inserter(resolved.params));
@@ -158,14 +159,10 @@ public:
         const std::uint64_t seed = pattern_ == detail::Pattern::Noise ? seed_ : 0;
         const CodeValues values =
             co_try(detail::generate(pattern_, desc.format, desc.width, desc.height, seed, index));
-        const std::vector<std::byte> bytes = co_try(pack(values));
+        const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::shared_ptr<HostFrame> frame =
-            co_try(ctx.allocateHost(desc, bytes.size(), FRAME_ALIGNMENT, 0));
-        const std::span<std::byte> data = frame->data();
-        if (data.size() != bytes.size()) {
-            co_return makeError(Errc::Internal, "synthetic: the host frame has another size");
-        }
-        std::ranges::copy(bytes, data.begin());
+            co_try(ctx.allocateHost(desc, layout.bytes, FRAME_ALIGNMENT, 0));
+        co_try(pack(values, frame->data()));
         co_return ctx.publish(frame);
     }
 
@@ -179,19 +176,11 @@ private:
 
 class SyntheticProvider final : public ISourceProvider, public Managed<SyntheticProvider> {
 public:
-    SyntheticProvider(CreationKey<ComponentRegistry> key,
-                      const ParameterValues& /*values*/) noexcept
+    explicit SyntheticProvider(CreationKey<ComponentRegistry> key) noexcept
         : Managed(std::move(key)) {}
 
     static ComponentInfo info() noexcept {
-        return {.id = "synthetic",
-                .name = "Synthetic test patterns",
-                .kind = Kind::Source,
-                .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "synthetic", .name = "Synthetic test patterns", .version = 1};
     }
     static std::expected<void, Unavailable> probe(const Capabilities& /*caps*/) { return {}; }
 

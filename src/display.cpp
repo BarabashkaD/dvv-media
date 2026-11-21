@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "dvv/media/colour_preset.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
 #include "format_table.h"
@@ -75,8 +76,8 @@ std::array<float, 3> hlgToLinear(std::array<float, 3> v) {
     return {nitsToLinear(gain * e[0]), nitsToLinear(gain * e[1]), nitsToLinear(gain * e[2])};
 }
 
-PixelFormatDescriptor displayDescriptor() {
-    PixelFormatDescriptor d;
+PixelFormatDesc displayDescriptor() {
+    PixelFormatDesc d;
     d.name = std::string(DISPLAY_NAME);
     d.model = ColourModel::Rgb;
     d.componentCount = 4;
@@ -153,7 +154,7 @@ DisplayAffine toFloat(const Matrix3& matrix, const std::array<double, 3>& offset
 
 FormatId displayFormat() {
     static const FormatId ID = [] {
-        const PixelFormatDescriptor d = displayDescriptor();
+        const PixelFormatDesc d = displayDescriptor();
         if (const auto valid = validate(d); !valid) {
             throw std::logic_error("display format: " + valid.error().message);
         }
@@ -167,7 +168,7 @@ FormatId displayFormat() {
 }
 
 bool isDisplay(FormatId format) noexcept {
-    return descriptor(format).name == DISPLAY_NAME;
+    return formatDesc(format).name == DISPLAY_NAME;
 }
 
 ColourId displayColour() {
@@ -182,13 +183,13 @@ ViewSpec displayView(const Domain& device_domain) {
     return ViewSpec{.format = displayFormat(),
                     .colour = displayColour(),
                     .layout = LayoutPolicy::Any,
-                    .api = Api::VkImage,
+                    .api = vulkan::IMAGE,
                     .domain = device_domain,
                     .downscaleLog2 = 0};
 }
 
 ResolvedColour resolveColour(const FrameDesc& desc, FileHint hint) {
-    const ColourModel model = descriptor(desc.format).model;
+    const ColourModel model = formatDesc(desc.format).model;
     const ColourParams& given = colourParams(desc.colour);
     ResolvedColour resolved{
         .params = given, .assumed = 0, .standard = standardOf(given, model, hint)};
@@ -223,7 +224,7 @@ ResolvedColour resolveColour(const FrameDesc& desc, FileHint hint) {
 }
 
 DisplayAffine displayAffine(FormatId format, const ColourParams& resolved) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     if (d.componentCount == 0) {
         return {};  // unknown id
     }
@@ -281,7 +282,7 @@ std::array<float, 4> toDisplayReference(FormatId format, const ColourParams& res
                                         std::span<const std::uint16_t> code_values) noexcept {
     const DisplayAffine affine = displayAffine(format, resolved);
     const std::size_t count = std::min<std::size_t>(
-        {descriptor(format).componentCount, std::size_t{3}, code_values.size()});
+        {formatDesc(format).componentCount, std::size_t{3}, code_values.size()});
     std::array<float, 3> c{};
     for (std::size_t k = 0; k < count; ++k) {
         c[k] = static_cast<float>(code_values[k]);

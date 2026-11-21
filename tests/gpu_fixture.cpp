@@ -17,7 +17,7 @@ namespace {
 
 Task<Result<std::uint64_t>> submitTask(gpu::ExecutionContext& context, IExecutor& executor,
                                        gpu::RecordFunction record) {
-    co_return co_await context.submit(executor, std::move(record));
+    co_return co_await gpu::submit(context, executor, std::move(record));
 }
 
 }  // namespace
@@ -42,21 +42,21 @@ Result<std::uint64_t> submitAndWait(gpu::ExecutionContext& context, IExecutor& e
 }
 
 GpuTest::GpuTest() {
-    auto registry = gpu::GpuRegistry::create();
-    if (!registry) {
-        FAIL(registry.error().describe());
+    auto gpu_instance = gpu::GpuInstance::create();
+    if (!gpu_instance) {
+        FAIL(gpu_instance.error().describe());
     }
-    registry_ = std::move(*registry);
+    gpu_instance_ = std::move(*gpu_instance);
 }
 
 GpuTest::~GpuTest() {
     context_.reset();
     executor_.reset();
-    CHECK(registry_->validationMessageCount() == 0);
+    CHECK(gpu_instance_->validationMessageCount() == 0);
 }
 
 gpu::DeviceId GpuTest::device() const {
-    if (const auto best = registry_->bestDevice()) {
+    if (const auto best = gpu_instance_->bestDevice()) {
         return *best;
     }
     FAIL("no usable Vulkan device");
@@ -65,7 +65,7 @@ gpu::DeviceId GpuTest::device() const {
 
 gpu::ExecutionContext& GpuTest::context() {
     if (!context_) {
-        auto context = registry_->createContext(device());
+        auto context = gpu_instance_->createContext(device());
         if (!context) {
             FAIL(context.error().describe());
         }

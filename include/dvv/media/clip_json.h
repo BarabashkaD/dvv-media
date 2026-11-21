@@ -1,6 +1,6 @@
 #pragma once
 
-// The clip description JSON (D5 design §3): `{"rawreelClip": 1, ...}` names a raw clip's format,
+// The clip description JSON: `{"rawreelClip": 1, ...}` names a raw clip's format,
 // size, frame rate and colour. Every key but rawreelClip is optional; at least one group is given.
 
 #include <cstdint>
@@ -21,7 +21,7 @@ struct ClipDescription {
     std::optional<std::string> format{};
     std::optional<std::pair<std::uint32_t, std::uint32_t>> size{};  // width, height: 1..65535
     std::optional<Rational> fps{};                                  // reduced, num and den > 0
-    // "colour": {"standard": "<token>", "range": "full"|"limited"} (D5R §3.2): the preset is
+    // "colour": {"standard": "<token>", "range": "full"|"limited"}: the preset is
     // always set; the range is Unspecified when not given. The raw provider uses it as it uses
     // colour= and range= (the query wins per key).
     std::optional<ColourSpec> colour{};
@@ -31,7 +31,7 @@ struct ClipDescription {
 // Parses `text` strictly (an unknown key at any level is an error). `clip_utf8_path` names the
 // file in the errors and anchors relative "@" paths; the file is not read here (loadClipJson()
 // reads it). Errc::Format "clip description '<file>': <json path>: <reason>" (no "<json path>: "
-// at the top level), e.g. "rawreelClip: unsupported version 2 (this rawreel reads 1)" (any number
+// at the top level), e.g. "rawreelClip: unsupported version 2 (dvv-media reads 1)" (any number
 // but the integer 1, so 2.0 too; a non-number is "rawreelClip: expected the integer 1"),
 // "size: unknown key 'w'", "format: unknown pixel format 'yuv421p'", "frameRate: write N or N/D,
 // e.g. \"30000/1001\"", "colour: missing key 'standard'", "colour: unknown key 'custom'

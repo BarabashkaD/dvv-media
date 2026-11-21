@@ -31,9 +31,11 @@ std::vector<std::byte> expectedBytes(detail::Pattern pattern, std::string_view f
                                      std::uint32_t width, std::uint32_t height, std::uint64_t seed,
                                      std::int64_t index) {
     const auto values = detail::generate(pattern, idOf(format), width, height, seed, index);
-    REQUIRE_MESSAGE(values.has_value(), values.error().describe());
+    REQUIRE_MESSAGE(values.has_value(),
+                    (values.has_value() ? std::string{} : values.error().describe()));
     auto bytes = media::pack(*values);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().describe());
+    REQUIRE_MESSAGE(bytes.has_value(),
+                    (bytes.has_value() ? std::string{} : bytes.error().describe()));
     return *bytes;
 }
 
@@ -41,7 +43,8 @@ std::vector<std::byte> frameBytes(SourceHarness& harness,
                                   const std::shared_ptr<media::ISource>& source,
                                   std::int64_t index) {
     auto bytes = harness.originalBytes(source, index);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().describe());
+    REQUIRE_MESSAGE(bytes.has_value(),
+                    (bytes.has_value() ? std::string{} : bytes.error().describe()));
     return *bytes;
 }
 
@@ -75,18 +78,20 @@ TEST_CASE("synthetic: deterministic") {
     CHECK(two != frameBytes(harness, first, 3));
     CHECK(first->info().deterministic);
     CHECK(first->info().access == media::SourceAccess::RandomCheap);
+    CHECK(first->info().fixed == media::FixedFields{});
 }
 
 TEST_CASE("synthetic: every catalogue format produces in-range code values") {
     SourceHarness harness;
     for (const media::FormatId format : media::catalogue()) {
-        const media::PixelFormatDescriptor& descriptor = media::descriptor(format);
+        const media::PixelFormatDesc& descriptor = media::formatDesc(format);
         INFO(descriptor.name);
         const auto source = harness.open("synthetic:gradient?fmt=" + descriptor.name + "&size=6x2");
         CHECK(source->info().desc.format == format);
         const std::vector<std::byte> bytes = frameBytes(harness, source, 0);
         const auto values = media::unpack(format, 6, 2, bytes);
-        REQUIRE_MESSAGE(values.has_value(), values.error().describe());
+        REQUIRE_MESSAGE(values.has_value(),
+                        (values.has_value() ? std::string{} : values.error().describe()));
         for (std::size_t c = 0; c < descriptor.componentCount; ++c) {
             const std::uint32_t limit = 1U << descriptor.components[c].bits;
             for (const std::uint16_t value : values->components[c]) {

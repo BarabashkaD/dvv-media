@@ -1,6 +1,6 @@
 #pragma once
 
-// Frame value types of the media layer (spec §6, M2 design §4.3).
+// Frame value types of the media layer.
 
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "dvv/base/error.h"
+#include "dvv/base/utf8.h"
 #include "dvv/gpu/device_id.h"
 
 namespace dvv::media {
@@ -18,6 +19,10 @@ struct Rational {
     std::int64_t den = 1;
     bool operator==(const Rational&) const = default;  // plain member equality, no normalisation
 };
+
+// The frame rate a source reports when its input states none (a raw file without fps, a Y4M
+// header without F, a container without a rate).
+inline constexpr Rational FALLBACK_FPS{25, 1};
 
 using FormatId = std::uint32_t;  // index into the process-wide format table (catalogue first)
 using ColourId = std::uint32_t;  // index into the process-wide colour table (0 = all Unspecified)
@@ -38,7 +43,12 @@ struct FrameDesc {
     bool operator==(const FrameDesc&) const = default;
 };
 
-enum class Api : std::uint8_t { HostPlanes, VkBuffer, VkImage /*, AvFrame (M4) */ };
+// Deprecated (removed in 1.0.0): Api::VkBuffer and Api::VkImage; use vulkan::BUFFER /
+// vulkan::IMAGE from frame_vulkan.h.
+enum class Api : std::uint8_t { HostPlanes, VkBuffer, VkImage };  // VkBuffer, VkImage deprecated
+// The 1.0.0 name (an open set there); Api stays its alias. Compare with == only: do not switch on
+// it, cast it or hash it; it becomes a class in 1.0.0.
+using BindingKind = Api;
 enum class MemKind : std::uint8_t { Host, HostVisible, DeviceLocal };
 struct Domain {
     MemKind kind = MemKind::Host;
@@ -46,7 +56,14 @@ struct Domain {
     gpu::DeviceGeneration generation{};
     bool operator==(const Domain&) const = default;
 };
-enum class LayoutPolicy : std::uint8_t { Any, Tight, RowAlign256, VkOptimal };
+// Deprecated (removed in 1.0.0): LayoutPolicy::VkOptimal; use Opaque.
+enum class LayoutPolicy : std::uint8_t {
+    Any,
+    Tight,
+    RowAlign256,
+    VkOptimal,           // VkOptimal deprecated
+    Opaque = VkOptimal,  // a backend-defined layout the host does not address
+};
 struct ViewSpec {
     FormatId format = 0;
     ColourId colour = 0;
@@ -90,12 +107,14 @@ struct ColourParams {
 // id 0 (all Unspecified).
 [[nodiscard]] const ColourParams& colourParams(ColourId id) noexcept;
 
-// UTF-8 text to a path through std::u8string, never through the ANSI code page on Windows (D19).
-// Invalid UTF-8 is replaced first (each byte that does not start a well-formed sequence becomes
-// U+FFFD), so the conversion never throws.
-[[nodiscard]] std::filesystem::path pathFromUtf8(std::string_view utf8);
-// The opposite direction for messages and resolved URIs: path.u8string(), never path.string().
-// Returns "(path not representable as UTF-8)" if the platform conversion fails.
-[[nodiscard]] std::string utf8FromPath(const std::filesystem::path& path);
+// Deprecated (removed in 1.0.0): use dvv::pathFromText.
+[[nodiscard]] inline std::filesystem::path pathFromUtf8(std::string_view utf8) {
+    return dvv::pathFromText(utf8);
+}
+// Deprecated (removed in 1.0.0): use dvv::pathText (names the file again) or
+// dvv::pathDisplayText (shown text).
+[[nodiscard]] inline std::string utf8FromPath(const std::filesystem::path& path) {
+    return dvv::pathText(path);
+}
 
 }  // namespace dvv::media

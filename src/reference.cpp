@@ -39,7 +39,7 @@ void writeWord(std::span<std::byte> bytes, std::size_t at, const PlaneDesc& plan
 
 // The component grid widths (componentSize) of a format; 0 beyond componentCount.
 [[nodiscard]] std::array<std::uint32_t, MAX_COMPONENTS> gridWidths(FormatId format,
-                                                                   const PixelFormatDescriptor& d,
+                                                                   const PixelFormatDesc& d,
                                                                    std::uint32_t width,
                                                                    std::uint32_t height) {
     std::array<std::uint32_t, MAX_COMPONENTS> widths{};
@@ -54,7 +54,7 @@ void writeWord(std::span<std::byte> bytes, std::size_t at, const PlaneDesc& plan
 // padding bits and row padding are skipped. A plane's rows are its components' rows (validate()
 // ties the plane's log2SubY to them).
 template <typename Visit>
-void forEachSample(const PixelFormatDescriptor& d, const FrameGeometry& frame, std::uint32_t width,
+void forEachSample(const PixelFormatDesc& d, const FrameGeometry& frame, std::uint32_t width,
                    const std::array<std::uint32_t, MAX_COMPONENTS>& widths, const Visit& visit) {
     for (std::size_t p = 0; p < d.planeCount; ++p) {
         const PlaneDesc& plane = d.planes[p];
@@ -91,7 +91,23 @@ Result<std::vector<std::byte>> pack(const CodeValues& values) {
     if (!frame) {
         return std::unexpected(std::move(frame.error()));
     }
-    const PixelFormatDescriptor& d = descriptor(values.format);
+    std::vector<std::byte> bytes(frame->bytes);
+    if (auto packed = pack(values, bytes); !packed) {
+        return std::unexpected(std::move(packed.error()));
+    }
+    return bytes;
+}
+
+Result<void> pack(const CodeValues& values, std::span<std::byte> out) {
+    auto frame = geometry(values.format, values.width, values.height);
+    if (!frame) {
+        return std::unexpected(std::move(frame.error()));
+    }
+    if (out.size() != frame->bytes) {
+        return makeError(Errc::Internal, std::format("pack: the output holds {} bytes, expected {}",
+                                                     out.size(), frame->bytes));
+    }
+    const PixelFormatDesc& d = formatDesc(values.format);
     const std::array<std::uint32_t, MAX_COMPONENTS> widths =
         gridWidths(values.format, d, values.width, values.height);
     for (std::size_t c = 0; c < MAX_COMPONENTS; ++c) {
@@ -120,15 +136,15 @@ Result<std::vector<std::byte>> pack(const CodeValues& values) {
                             i % widths[c], i / widths[c], bits));
         }
     }
-    std::vector<std::byte> bytes(frame->bytes);
+    std::ranges::fill(out, std::byte{0});
     forEachSample(d, *frame, values.width, widths,
-                  [&bytes, &values](std::size_t c, std::size_t i, std::size_t at,
-                                    const PlaneDesc& plane, unsigned shift) {
-                      const std::uint32_t word = readWord(bytes, at, plane) |
+                  [out, &values](std::size_t c, std::size_t i, std::size_t at,
+                                 const PlaneDesc& plane, unsigned shift) {
+                      const std::uint32_t word = readWord(out, at, plane) |
                                                  (std::uint32_t{values.components[c][i]} << shift);
-                      writeWord(bytes, at, plane, word);
+                      writeWord(out, at, plane, word);
                   });
-    return bytes;
+    return {};
 }
 
 Result<CodeValues> unpack(FormatId format, std::uint32_t width, std::uint32_t height,
@@ -141,7 +157,7 @@ Result<CodeValues> unpack(FormatId format, std::uint32_t width, std::uint32_t he
         return makeError(Errc::Internal, std::format("original has {} bytes, expected at least {}",
                                                      original.size(), frame->bytes));
     }
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     const std::array<std::uint32_t, MAX_COMPONENTS> widths = gridWidths(format, d, width, height);
     CodeValues result{.format = format, .width = width, .height = height};
     for (std::size_t c = 0; c < d.componentCount; ++c) {

@@ -1,8 +1,8 @@
 #pragma once
 
-// Source providers and the source factory (M2 design §4.5, §5.5; spec §7.2).
+// Source providers and the source factory.
 //
-// A provider is a Kind::Source component implementing ISourceProvider. SourceFactory creates one
+// A provider is a component registered for ISourceProvider. SourceFactory creates one
 // instance of every available provider, picks the provider for a request (scheme, file head,
 // ?impl=, confidences) and lets it open the source. A provider constructs its source with
 // SourceFactory::issueKey<T>(std::move(ticket)): the OpenTicket it was handed is the only way to
@@ -16,6 +16,7 @@
 #include <source_location>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -42,18 +43,21 @@ struct FormatHint {
     std::optional<Rational> fps;
 };
 
-// The clip description next to a file, `<file>.<ext>.json` (D5 design §3.5).
+// The clip description next to a file, `<file>.<ext>.json`.
 struct Sidecar {
     std::string path;   // UTF-8: the file's path plus ".json"
     std::string text;   // the file's text; empty when it could not be read
     std::string error;  // why it could not be read (e.g. "'<file>' is too large"); empty if read
 };
 
+// How file sources read frames unless the application says otherwise.
+inline constexpr platform::FileReadMode DEFAULT_FILE_READS = platform::FileReadMode::Auto;
+
 struct SourceRequest {
     Uri uri;
-    std::optional<FormatHint> hint;
+    std::optional<FormatHint> hint{};
     // How file sources (raw, Y4M) read frames (M3.1 U-IO2; the application's config file).
-    platform::FileReadMode fileReads = platform::FileReadMode::Auto;
+    platform::FileReadMode fileReads = DEFAULT_FILE_READS;
     // Set by SourceFactory::open() for a file: URI without clip= when <file>.json exists; callers
     // leave it empty (it is replaced). Only the raw provider uses it.
     std::optional<Sidecar> sidecar{};
@@ -105,10 +109,12 @@ private:
 
 struct OpenContext {
     IExecutor& io;
+    // Stopped when the caller no longer wants the source; a provider that waits should end early.
+    std::stop_token stop{};
 };
 
-// Component kind Source (spec §9.3). Implementations are stateless: match() and open() may run
-// concurrently, and a source never keeps a pointer to its provider.
+// The interface of the source-provider components. Implementations are stateless:
+// match() and open() may run concurrently, and a source never keeps a pointer to its provider.
 class ISourceProvider {
 public:
     ISourceProvider() = default;
@@ -135,28 +141,48 @@ struct ProviderEntry {
     std::unique_ptr<ISourceProvider> provider;
 };
 
+// A Source provider the registry reported unavailable when the factory was created.
+struct UnavailableProvider {
+    std::string_view id{};     // ComponentInfo::id (static storage)
+    std::string reason{};      // the registry's Unavailable::reason, e.g. "missing capability 'x'"
+    std::string capability{};  // Unavailable::capability; empty when another cause
+};
+
 class SourceFactory final : public Managed<SourceFactory> {
 public:
     using OpenResult = std::variant<std::unique_ptr<ISource>, Ambiguous>;
 
-    // Own authority. Creates one instance of every available Kind::Source component of
-    // `registry`; one that fails to be created is logged and skipped. Errc::Internal for a null
-    // `io`; Errc::Unsupported "no source providers registered" when no provider is left.
+    // Own authority. Creates one instance of every available component registered for
+    // ISourceProvider in `registry`; one that fails to be created is logged and skipped.
+    // Errc::Internal for a null `io`; Errc::Unsupported "no source providers registered" when no
+    // provider is left, followed by the unavailable providers ("; unavailable: <id> (<reason>)").
     [[nodiscard]] static Result<std::unique_ptr<SourceFactory>> create(
         ComponentRegistry& registry, std::shared_ptr<IExecutor> io,
         std::source_location where = std::source_location::current());
-    // For create() only (the key).
+    // For create() only (the key). Deprecated (removed in 1.0.0): the form without the
+    // unavailable list.
     SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
                   std::shared_ptr<IExecutor> io) noexcept;
+    // For create() only (the key).
+    SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
+                  std::vector<UnavailableProvider> unavailable,
+                  std::shared_ptr<IExecutor> io) noexcept;
 
-    // Picks a provider and opens the source (design §5.5); thread-safe. A file's head is read on
+    // The Source providers the registry reported unavailable at create(), sorted by id.
+    [[nodiscard]] std::span<const UnavailableProvider> unavailableProviders() const noexcept;
+
+    // Picks a provider and opens the source; thread-safe. A file's head is read on
     // the io executor. Ambiguous when the best confidence is below 60 or another is within less
     // than 10 of it. Errc::Io when the file cannot be read, Errc::Unsupported when no provider
     // can open the request, Errc::Internal when a provider throws (that provider is then
     // disabled for the factory's lifetime) or returns no source. A provider's own open() error
     // (e.g. Unsupported for a codec it refuses) is returned unchanged; isNoProviderMatch() tells
-    // the two Unsupported kinds apart.
+    // the two Unsupported kinds apart. The same as open(request, std::stop_token{}).
     [[nodiscard]] Task<Result<OpenResult>> open(const SourceRequest& request);
+    // The same with a token: Errc::Cancelled "the open was cancelled" when it is stopped after the
+    // head is read, or when it is stopped as the provider returns a source (the source is then
+    // destroyed). The token also reaches the provider in OpenContext::stop.
+    [[nodiscard]] Task<Result<OpenResult>> open(const SourceRequest& request, std::stop_token stop);
 
     // For providers: the typed key of the one source a ticket may create. Throws
     // std::logic_error for a ticket that was already used (moved from or spent).
@@ -169,9 +195,10 @@ private:
     // failed: <what>".
     [[nodiscard]] Error providerFailed(std::size_t index, std::string_view what);
     [[nodiscard]] Task<Result<OpenResult>> openWith(std::size_t index, const SourceRequest& request,
-                                                    const FormatGuess& guess);
+                                                    const FormatGuess& guess, std::stop_token stop);
 
-    std::vector<ProviderEntry> providers_;  // sorted by id
+    std::vector<ProviderEntry> providers_;          // sorted by id
+    std::vector<UnavailableProvider> unavailable_;  // sorted by id
     std::shared_ptr<IExecutor> io_;
     mutable std::mutex mutex_;           // guards disabled_
     std::vector<std::size_t> disabled_;  // providers_ indices that threw from match() or open()
@@ -197,6 +224,7 @@ CreationKey<SourceFactory> SourceFactory::issueKey(OpenTicket&& ticket) {
 
 }  // namespace dvv::media
 
+// Deprecated (removed in 1.0.0): the registry lists source providers by interface.
 template <>
 struct dvv::InterfaceKind<dvv::media::ISourceProvider>
     : std::integral_constant<dvv::Kind, dvv::Kind::Source> {};

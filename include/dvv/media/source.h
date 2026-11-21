@@ -1,12 +1,13 @@
 #pragma once
 
-// Frame sources (M2 design §4.5, spec §7.1): what a source tells about itself, the context the
+// Frame sources: what a source tells about itself, the context the
 // store hands to one produce() call, and the source interface.
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -19,24 +20,42 @@
 
 namespace dvv::media {
 
+namespace detail {
+struct Entry;
+}  // namespace detail
+
 enum class SourceAccess : std::uint8_t { RandomCheap, RandomCostly, Sequential };
 
+// Which format fields the source's own header, container or graph fixes. An application must not
+// offer to change a fixed field: a reopen would ignore or refuse it.
+struct FixedFields {
+    bool format = false;
+    bool size = false;
+    bool fps = false;
+    [[nodiscard]] static constexpr FixedFields all() noexcept { return {true, true, true}; }
+    // True when every field fixed in `other` is fixed here.
+    [[nodiscard]] constexpr bool covers(const FixedFields& other) const noexcept {
+        return (format || !other.format) && (size || !other.size) && (fps || !other.fps);
+    }
+    friend constexpr bool operator==(const FixedFields&, const FixedFields&) = default;
+};
+
 struct SourceInfo {
-    FrameDesc desc;
-    Rational fps;
-    std::optional<std::int64_t> frameCount;  // nullopt = unbounded generator
+    FrameDesc desc{};
+    Rational fps{};
+    std::optional<std::int64_t> frameCount{};  // nullopt = unbounded generator
     SourceAccess access = SourceAccess::RandomCheap;
     bool deterministic = true;
-    std::string resolvedUri;            // includes the format: reopens without guessing
-    std::string provider;               // component id
-    std::vector<std::string> warnings;  // e.g. "N trailing bytes ignored"
+    std::string resolvedUri{};            // includes the format: reopens without guessing
+    std::string provider{};               // component id
+    std::vector<std::string> warnings{};  // e.g. "N trailing bytes ignored"
     // File sources: FileReader::modeText(), "unbuffered", "buffered" or "buffered (fallback:
     // <reason>)" (M3.1 U-IO2); empty otherwise (D18 bench).
-    std::string reader;
-    // Info-level lines for the log, not the infobar (D5 design §3.5), e.g. "clip.yuv.json
+    std::string reader{};
+    // Info-level lines for the log, not the infobar, e.g. "clip.yuv.json
     // describes clip.yuv (it wins over the file name)".
     std::vector<std::string> notes{};
-    // The colour hint the provider derived from the file tags (D5R F1): `bt601` names the BT.601
+    // The colour hint the provider derived from the file tags: `bt601` names the BT.601
     // PAL/NTSC that the matrix code points to (the provider also writes it into desc.colour, which
     // the render path needs), and `nonStandard` says that the file signalled a code that fits no
     // field. Pass it to resolveColour()/standardOf() when labelling the stream. Sources without
@@ -45,6 +64,7 @@ struct SourceInfo {
     // The UTF-8 path of the clip description used (raw: clip=@<file> as given, or the sidecar
     // <file>.<ext>.json); empty when none.
     std::string clipFile{};
+    FixedFields fixed{};  // last; none for raw and synthetic sources
 };
 
 // Made by the store for one produce() call.
@@ -58,10 +78,15 @@ public:
 
     [[nodiscard]] const FrameKey& key() const noexcept { return key_; }
     [[nodiscard]] IExecutor& io() const noexcept { return *io_; }
+    // Stopped when the key's origin is detached or the store is destroyed. A source may poll it;
+    // a produce that sees it stopped returns Errc::Cancelled. A source's stop callback only
+    // signals: it never blocks and never calls the store.
+    [[nodiscard]] std::stop_token stopToken() const noexcept { return stop_; }
     // A host frame for this key: `capacity` bytes aligned to `alignment`, frame data at
     // `data_offset`. Errc::Internal when desc differs from the source's, the alignment is not a
-    // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (Task 7b: after
-    // one eviction retry).
+    // power of two, or data_offset + geometry().bytes > capacity; Errc::OutOfMemory (after
+    // one eviction retry). Counts `capacity` in the host tier from the call until the frame is
+    // published or the produce step ends.
     [[nodiscard]] Result<std::shared_ptr<HostFrame>> allocateHost(const FrameDesc& desc,
                                                                   std::size_t capacity,
                                                                   std::size_t alignment,
@@ -74,21 +99,25 @@ public:
 
 private:
     friend class FrameStore;
-    ProduceContext(FrameStore& store, FrameKey key, FrameDesc desc, IExecutor& io) noexcept;
+    ProduceContext(FrameStore& store, detail::Entry& output, FrameKey key, FrameDesc desc,
+                   IExecutor& io, std::stop_token stop) noexcept;
     FrameStore* store_;
+    detail::Entry* output_;  // the step's pending output, which holds its reservation
     FrameKey key_;
     FrameDesc desc_;
     IExecutor* io_;
+    std::stop_token stop_;
     std::shared_ptr<IFrame> frame_;
 };
 
-// Spec §7.1.
+// A source of frames: the store calls produce() for each frame it makes from the source.
 class ISource {
 public:
     virtual ~ISource() = default;
     [[nodiscard]] virtual const SourceInfo& info() const noexcept = 0;
     // May be called concurrently for different indices. Errc::Internal for an index outside
-    // [0, frameCount); Errc::Io for read errors and truncated frames.
+    // [0, frameCount); Errc::Io for read errors and truncated frames; Errc::Cancelled when
+    // ctx.stopToken() is stopped.
     [[nodiscard]] virtual Task<Result<FrameRef>> produce(std::int64_t index,
                                                          ProduceContext& ctx) = 0;
 };

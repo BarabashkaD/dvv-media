@@ -45,21 +45,23 @@ media::FormatId idOf(std::string_view name) {
 std::shared_ptr<gpu::GpuBuffer> makeBuffer(gpu::ExecutionContext& context, std::uint64_t size,
                                            VkBufferUsageFlags usage, gpu::MemoryUsage memory,
                                            std::string name) {
-    auto buffer = context.createBuffer(
-        {.size = size, .usage = usage, .memory = memory, .name = std::move(name)});
-    REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
+    auto buffer = gpu::createBuffer(
+        context, {.size = size, .usage = usage, .memory = memory, .name = std::move(name)});
+    REQUIRE_MESSAGE(buffer.has_value(),
+                    (buffer.has_value() ? std::string{} : buffer.error().describe()));
     return std::move(*buffer);
 }
 
 std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::uint32_t width,
                                          std::uint32_t height, VkFormat format, std::string name) {
-    auto image =
-        context.createImage({.width = width,
-                             .height = height,
-                             .format = format,
-                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                             .name = std::move(name)});
-    REQUIRE_MESSAGE(image.has_value(), image.error().describe());
+    auto image = gpu::createImage(
+        context, {.width = width,
+                  .height = height,
+                  .format = format,
+                  .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                  .name = std::move(name)});
+    REQUIRE_MESSAGE(image.has_value(),
+                    (image.has_value() ? std::string{} : image.error().describe()));
     return std::move(*image);
 }
 
@@ -72,7 +74,8 @@ std::shared_ptr<gpu::GpuBuffer> frameBuffer(gpu::ExecutionContext& context, std:
 
 std::shared_ptr<gpu::ComputePipeline> unpackPipeline(gpu::ExecutionContext& context) {
     auto pipeline = detail::createUnpackPipeline(context);
-    REQUIRE_MESSAGE(pipeline.has_value(), pipeline.error().describe());
+    REQUIRE_MESSAGE(pipeline.has_value(),
+                    (pipeline.has_value() ? std::string{} : pipeline.error().describe()));
     return std::move(*pipeline);
 }
 
@@ -93,7 +96,7 @@ struct UnpackCase {
 // The frame sizes of the bit-exactness test; a width multiple (v210: 2) rounds the widths up and
 // drops 1x1.
 std::vector<std::pair<std::uint32_t, std::uint32_t>> frameSizes(
-    const media::PixelFormatDescriptor& format) {
+    const media::PixelFormatDesc& format) {
     static constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 5> SIZES{
         {{1, 1}, {2, 2}, {33, 17}, {49, 3}, {64, 64}}};
     const std::uint32_t multiple = format.widthMultiple;
@@ -109,29 +112,36 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> frameSizes(
 
 UnpackCase prepareCase(gpu::ExecutionContext& context, media::FormatId id, std::uint32_t width,
                        std::uint32_t height, std::uint64_t seed, std::uint64_t offset) {
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     UnpackCase unpack{.width = width, .height = height, .seed = seed, .offset = offset};
     auto values = detail::generate(detail::Pattern::Noise, id, width, height, seed, 0);
-    REQUIRE_MESSAGE(values.has_value(), values.error().describe());
+    REQUIRE_MESSAGE(values.has_value(),
+                    (values.has_value() ? std::string{} : values.error().describe()));
     unpack.values = std::move(*values);
     const auto bytes = media::pack(unpack.values);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().describe());
+    REQUIRE_MESSAGE(bytes.has_value(),
+                    (bytes.has_value() ? std::string{} : bytes.error().describe()));
     const auto frame = media::geometry(id, width, height);
-    REQUIRE_MESSAGE(frame.has_value(), frame.error().describe());
+    REQUIRE_MESSAGE(frame.has_value(),
+                    (frame.has_value() ? std::string{} : frame.error().describe()));
     REQUIRE(bytes->size() == frame->bytes);
     // The GPU result is compared with these values; the CPU reference reads them back first.
     const auto reference = media::unpack(id, width, height, *bytes);
-    REQUIRE_MESSAGE(reference.has_value(), reference.error().describe());
+    REQUIRE_MESSAGE(reference.has_value(),
+                    (reference.has_value() ? std::string{} : reference.error().describe()));
     REQUIRE(*reference == unpack.values);
 
     const std::uint64_t size = detail::unpackBufferBytes(offset, frame->bytes);
     unpack.staging = makeBuffer(context, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                 gpu::MemoryUsage::HostUpload, "staging");
-    const std::span<std::byte> mapped = unpack.staging->mapped();
-    REQUIRE(mapped.size() >= size);
-    std::memset(mapped.data(), 0, size);
-    std::memcpy(mapped.data() + offset, bytes->data(), bytes->size());
-    REQUIRE(unpack.staging->flush().has_value());
+    {
+        gpu::MappedWrite write = unpack.staging->mapWrite();
+        const std::span<std::byte> mapped = write.bytes();
+        REQUIRE(mapped.size() >= size);
+        std::memset(mapped.data(), 0, size);
+        std::memcpy(mapped.data() + offset, bytes->data(), bytes->size());
+        REQUIRE(write.flush().has_value());
+    }
     unpack.device = frameBuffer(context, size);
 
     for (std::size_t c = 0; c < format.componentCount; ++c) {
@@ -148,13 +158,15 @@ UnpackCase prepareCase(gpu::ExecutionContext& context, media::FormatId id, std::
 }
 
 // Compares the read-back images with the code values; FAIL_CHECK on the first mismatch.
-void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& unpack) {
+void compareCase(const media::PixelFormatDesc& format, const UnpackCase& unpack) {
     for (std::size_t c = 0; c < unpack.images.size(); ++c) {
         const gpu::GpuImage& image = *unpack.images[c];
         gpu::GpuBuffer& readback = *unpack.readbacks[c];
-        REQUIRE(readback.invalidate().has_value());
-        const std::span<const std::byte> texels = readback.mapped();
-        const bool wide = image.format() == VK_FORMAT_R16_UINT;
+        const auto read = readback.mapRead();
+        REQUIRE_MESSAGE(read.has_value(),
+                        (read.has_value() ? std::string{} : read.error().describe()));
+        const std::span<const std::byte> texels = read->bytes();
+        const bool wide = gpu::vulkanFormat(image) == VK_FORMAT_R16_UINT;
         const std::vector<std::uint16_t>& expected = unpack.values.components[c];
         REQUIRE(expected.size() == std::size_t{image.width()} * image.height());
         for (std::uint32_t y = 0; y < image.height(); ++y) {
@@ -179,7 +191,7 @@ void compareCase(const media::PixelFormatDescriptor& format, const UnpackCase& u
 
 // Unpacks noise frames of every size of frameSizes() on the GPU and compares them bit for bit.
 void checkFormat(GpuTest& test, media::FormatId id) {
-    const media::PixelFormatDescriptor& format = media::descriptor(id);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
     const auto pipeline = unpackPipeline(test.context());
     // Seed 1 at offset 0; seed 2 at offset 260 (4-aligned, not 16-aligned).
     std::vector<UnpackCase> cases;
@@ -200,10 +212,12 @@ void checkFormat(GpuTest& test, media::FormatId id) {
             }
         }
     });
-    REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
+    REQUIRE_MESSAGE(submitted.has_value(),
+                    (submitted.has_value() ? std::string{} : submitted.error().describe()));
     REQUIRE(recorded.size() == cases.size());
     for (const dvv::Result<void>& result : recorded) {
-        REQUIRE_MESSAGE(result.has_value(), result.error().describe());
+        REQUIRE_MESSAGE(result.has_value(),
+                        (result.has_value() ? std::string{} : result.error().describe()));
     }
     for (const UnpackCase& unpack : cases) {
         compareCase(format, unpack);
@@ -236,16 +250,16 @@ media::PlaneDesc plane(std::uint8_t group_pixels, std::uint8_t group_bytes, std:
 
 // Custom formats that use the shader paths no catalogue format reaches: 4-byte big-endian words
 // and 4:1:x chroma (log2SubX 2).
-std::vector<media::PixelFormatDescriptor> customFormats() {
+std::vector<media::PixelFormatDesc> customFormats() {
     using media::ByteOrder;
     using media::ComponentKind;
-    std::vector<media::PixelFormatDescriptor> formats;
+    std::vector<media::PixelFormatDesc> formats;
 
     // 10-bit RGB in one big-endian 32-bit word per pixel (R in bits 20..29, B in 0..9).
-    media::PixelFormatDescriptor rgb{.name = "test-rgb30-be32",
-                                     .model = media::ColourModel::Rgb,
-                                     .componentCount = 3,
-                                     .planeCount = 1};
+    media::PixelFormatDesc rgb{.name = "test-rgb30-be32",
+                               .model = media::ColourModel::Rgb,
+                               .componentCount = 3,
+                               .planeCount = 1};
     rgb.components = {component(ComponentKind::R, 10), component(ComponentKind::G, 10),
                       component(ComponentKind::B, 10)};
     rgb.planes[0] =
@@ -253,10 +267,10 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
     formats.push_back(rgb);
 
     // Packed 4:1:1 (FFmpeg uyyvyy411 order): U Y0 Y1 V Y2 Y3, 6 bytes per 4 pixels.
-    media::PixelFormatDescriptor packed{.name = "test-uyyvyy411",
-                                        .model = media::ColourModel::Yuv,
-                                        .componentCount = 3,
-                                        .planeCount = 1};
+    media::PixelFormatDesc packed{.name = "test-uyyvyy411",
+                                  .model = media::ColourModel::Yuv,
+                                  .componentCount = 3,
+                                  .planeCount = 1};
     packed.components = {component(ComponentKind::Y, 8), component(ComponentKind::U, 8, 2),
                          component(ComponentKind::V, 8, 2)};
     packed.planes[0] = plane(4, 6, 1, ByteOrder::Little, 0,
@@ -265,10 +279,10 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
     formats.push_back(packed);
 
     // Planar 4:1:0, 12-bit samples, two per big-endian 32-bit word (bits 16..27 and 0..11).
-    media::PixelFormatDescriptor planar{.name = "test-yuv410p12-be32",
-                                        .model = media::ColourModel::Yuv,
-                                        .componentCount = 3,
-                                        .planeCount = 3};
+    media::PixelFormatDesc planar{.name = "test-yuv410p12-be32",
+                                  .model = media::ColourModel::Yuv,
+                                  .componentCount = 3,
+                                  .planeCount = 3};
     planar.components = {component(ComponentKind::Y, 12), component(ComponentKind::U, 12, 2, 2),
                          component(ComponentKind::V, 12, 2, 2)};
     planar.planes[0] = plane(2, 4, 4, ByteOrder::Big, 0, {slot(0, 0, 0, 16), slot(0, 1, 0, 0)});
@@ -282,19 +296,21 @@ std::vector<media::PixelFormatDescriptor> customFormats() {
 
 TEST_CASE_FIXTURE(GpuTest, "GPU unpack is bit-exact for every catalogue format") {
     for (const media::FormatId id : media::catalogue()) {
-        SUBCASE(media::descriptor(id).name.c_str()) {
+        SUBCASE(media::formatDesc(id).name.c_str()) {
             checkFormat(*this, id);
         }
     }
 }
 
 TEST_CASE_FIXTURE(GpuTest, "GPU unpack is bit-exact for custom formats") {
-    for (const media::PixelFormatDescriptor& format : customFormats()) {
+    for (const media::PixelFormatDesc& format : customFormats()) {
         SUBCASE(format.name.c_str()) {
             const dvv::Result<void> valid = media::validate(format);
-            REQUIRE_MESSAGE(valid.has_value(), valid.error().describe());
+            REQUIRE_MESSAGE(valid.has_value(),
+                            (valid.has_value() ? std::string{} : valid.error().describe()));
             const dvv::Result<media::FormatId> id = detail::internCustomFormat(format);
-            REQUIRE_MESSAGE(id.has_value(), id.error().describe());
+            REQUIRE_MESSAGE(id.has_value(),
+                            (id.has_value() ? std::string{} : id.error().describe()));
             checkFormat(*this, *id);
         }
     }
@@ -310,7 +326,8 @@ TEST_CASE_FIXTURE(GpuTest, "an unpadded buffer is Internal") {
         recorded = detail::recordUnpack(recorder, *pipeline, *buffer, 0,
                                         {.format = id, .width = 33, .height = 17}, {});
     });
-    REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
+    REQUIRE_MESSAGE(submitted.has_value(),
+                    (submitted.has_value() ? std::string{} : submitted.error().describe()));
     REQUIRE(recorded.has_value());
     const dvv::Result<void> result = recorded.value_or(dvv::Result<void>{});
     REQUIRE_FALSE(result.has_value());
@@ -329,7 +346,8 @@ TEST_CASE_FIXTURE(GpuTest, "a frame base that is not 4-aligned is Internal") {
         recorded = detail::recordUnpack(recorder, *pipeline, *buffer, 2,
                                         {.format = id, .width = 4, .height = 4}, images);
     });
-    REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
+    REQUIRE_MESSAGE(submitted.has_value(),
+                    (submitted.has_value() ? std::string{} : submitted.error().describe()));
     REQUIRE(recorded.has_value());
     const dvv::Result<void> result = recorded.value_or(dvv::Result<void>{});
     REQUIRE_FALSE(result.has_value());
@@ -355,7 +373,8 @@ TEST_CASE_FIXTURE(GpuTest, "images must match the components") {
             recorded = detail::recordUnpack(recorder, *pipeline, *buffer, 0,
                                             {.format = id, .width = 4, .height = 4}, images);
         });
-        REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
+        REQUIRE_MESSAGE(submitted.has_value(),
+                        (submitted.has_value() ? std::string{} : submitted.error().describe()));
         REQUIRE(recorded.has_value());
         return *recorded;
     };
@@ -379,7 +398,8 @@ TEST_CASE_FIXTURE(GpuTest, "images must match the components") {
 
 TEST_CASE_FIXTURE(GpuTest, "the unpack pipeline binds one storage image") {
     const auto pipeline = detail::createUnpackPipeline(context());
-    REQUIRE_MESSAGE(pipeline.has_value(), pipeline.error().describe());
+    REQUIRE_MESSAGE(pipeline.has_value(),
+                    (pipeline.has_value() ? std::string{} : pipeline.error().describe()));
     CHECK((*pipeline)->bindings().storageImages == 1);
     CHECK((*pipeline)->pushConstantSize() == 64);
 }

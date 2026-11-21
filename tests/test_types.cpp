@@ -1,20 +1,30 @@
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
+#include "dvv/base/utf8.h"
+#include "dvv/media/frame.h"
+#include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
+#include "dvv/media/source.h"
 #include "dvv/media/types.h"
 
 namespace media = dvv::media;
 namespace fs = std::filesystem;
+
+static_assert(media::FALLBACK_FPS == media::Rational{25, 1});
 
 TEST_CASE("frame keys compare and hash by value") {
     const media::FrameKey key{.origin = 1, .index = 2};
@@ -81,13 +91,82 @@ TEST_CASE("value types compare by every field") {
     CHECK(differs([](media::ViewSpec& spec) { spec.format = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.colour = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.layout = media::LayoutPolicy::Tight; }));
-    CHECK(differs([](media::ViewSpec& spec) { spec.api = media::Api::VkBuffer; }));
+    CHECK(differs([](media::ViewSpec& spec) { spec.api = media::vulkan::BUFFER; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.kind = media::MemKind::HostVisible; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.device = dvv::gpu::DeviceId{1}; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.domain.generation = 1; }));
     CHECK(differs([](media::ViewSpec& spec) { spec.downscaleLog2 = 1; }));
 
     CHECK(media::Rational{.num = 50, .den = 2} != media::Rational{.num = 25, .den = 1});
+}
+
+TEST_CASE("binding kinds: the 1.0.0 spellings name today's values") {
+    static_assert(media::vulkan::BUFFER == media::Api::VkBuffer &&
+                  media::vulkan::IMAGE == media::Api::VkImage);
+    static_assert(std::is_same_v<media::BindingKind, media::Api>);
+    static_assert(media::LayoutPolicy::Opaque == media::LayoutPolicy::VkOptimal);
+}
+
+TEST_CASE("bindingIf returns only its own kind") {
+    CHECK(media::bindingIf<media::VkImageB>(media::Binding{media::HostPlanesB{}}) == nullptr);
+    CHECK(media::bindingIf<media::VkBufferB>(media::Binding{media::HostPlanesB{}}) == nullptr);
+
+    const std::array<std::byte, 6> bytes{};
+    media::HostPlanesB host;
+    host.planes[0] = std::span<const std::byte>(bytes).first(4);
+    host.planes[1] = std::span<const std::byte>(bytes).subspan(4);
+    host.strides[0] = 2;
+    host.strides[1] = 1;
+    host.planeCount = 2;
+    const media::Binding binding{host};
+    const media::HostPlanesB* read = media::bindingIf<media::HostPlanesB>(binding);
+    REQUIRE(read != nullptr);
+    CHECK(read->planeCount == 2);
+    CHECK(read->planes[0].data() == bytes.data());
+    CHECK(read->planes[0].size() == 4);
+    CHECK(read->planes[1].data() == bytes.data() + 4);
+    CHECK(read->planes[1].size() == 2);
+    CHECK(read->strides == host.strides);
+    CHECK(media::bindingIf<media::VkImageB>(binding) == nullptr);
+}
+
+// Additivity: the 0.1.1 initialisers of TierStats keep compiling (warnings are errors) until 1.0.0.
+TEST_CASE("TierStats keeps its 0.1.1 initialisers") {
+    const media::TierStats positional{media::Domain{}, 1, 2, 3};
+    const media::TierStats designated{
+        .domain = media::Domain{}, .bytes = 1, .budget = 2, .views = 3};
+    CHECK(positional.pending == 0);
+    CHECK(designated.pending == 0);
+    CHECK(positional.views == 3);
+    CHECK(designated.views == 3);
+}
+
+static_assert(media::FixedFields::all().covers(media::FixedFields{.format = true}) &&
+              !media::FixedFields{}.covers(media::FixedFields::all()));
+
+// Additivity: the 0.1.1 initialisers of SourceInfo keep compiling (warnings are errors) until
+// 1.0.0.
+TEST_CASE("SourceInfo keeps its 0.1.1 initialisers") {
+    const media::FrameDesc desc{};
+    const media::Rational fps{25, 1};
+    const media::SourceInfo short_form{desc, fps};
+    const media::SourceInfo positional{desc,
+                                       fps,
+                                       10,
+                                       media::SourceAccess::RandomCheap,
+                                       true,
+                                       "raw:x",
+                                       "raw",
+                                       {},
+                                       "",
+                                       {},
+                                       media::FileHint{},
+                                       ""};
+    const media::SourceInfo designated{.desc = desc, .fps = fps, .clipFile = "c"};
+    CHECK(short_form.fixed == media::FixedFields{});
+    CHECK(positional.fixed == media::FixedFields{});
+    CHECK(designated.fixed == media::FixedFields{});
+    CHECK(designated.clipFile == "c");
 }
 
 TEST_CASE("colour interning") {
@@ -193,7 +272,7 @@ TEST_CASE("colour interning is thread-safe and references stay valid") {
     CHECK(first == p0);
 }
 
-TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
+TEST_CASE("pathFromText keeps non-ASCII file names") {
     const std::string name = "Grüße-日本-🎞.yuv";
     std::random_device random;
     const fs::path dir =
@@ -201,7 +280,7 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
         ("dvv_media_test_types_" + std::to_string(random()) + "_" + std::to_string(random()));
     REQUIRE(fs::create_directory(dir));
     {
-        std::ofstream file(dir / media::pathFromUtf8(name), std::ios::binary);
+        std::ofstream file(dir / dvv::pathFromText(name), std::ios::binary);
         REQUIRE(file);
         file.write("abc", 3);
     }
@@ -211,7 +290,7 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
         entries.push_back(entry.path());
     }
     REQUIRE(entries.size() == 1);
-    CHECK(media::utf8FromPath(entries[0].filename()) == name);
+    CHECK(dvv::pathText(entries[0].filename()) == name);
     CHECK(fs::file_size(entries[0]) == 3);
 
     std::error_code error;
@@ -219,24 +298,47 @@ TEST_CASE("pathFromUtf8 keeps non-ASCII file names") {
     CHECK(!error);
 }
 
-TEST_CASE("pathFromUtf8 replaces invalid UTF-8") {
-    const std::string replacement = "\xEF\xBF\xBD";
+TEST_CASE("pathFromUtf8 forwards to pathFromText") {
     auto round_trip = [](const std::string& text) {
         return media::utf8FromPath(media::pathFromUtf8(text));
     };
+#if !defined(_WIN32)
+    // POSIX: the bytes are the path, unchanged.
+    CHECK(round_trip("a\xFF"
+                     "b") ==
+          "a\xFF"
+          "b");
+    CHECK(round_trip("\xE6\x97") == "\xE6\x97");                  // truncated
+    CHECK(round_trip("\xC0\xAF") == "\xC0\xAF");                  // overlong
+    CHECK(round_trip("\xED\xA0\x80") == "\xED\xA0\x80");          // surrogate
+    CHECK(round_trip("\xF0\x9F\x8E\x9E") == "\xF0\x9F\x8E\x9E");  // U+1F39E, valid
+#else
+    // Windows: each maximal ill-formed subpart becomes U+FFFD.
+    const std::string replacement = "\xEF\xBF\xBD";
     CHECK(round_trip("a\xFF"
                      "b") == "a" + replacement + "b");
-    CHECK(round_trip("\xE6\x97") == replacement + replacement);                    // truncated
+    CHECK(round_trip("\xE6\x97") == replacement);                                  // truncated
     CHECK(round_trip("\xC0\xAF") == replacement + replacement);                    // overlong
     CHECK(round_trip("\xED\xA0\x80") == replacement + replacement + replacement);  // surrogate
     CHECK(round_trip("\xF0\x9F\x8E\x9E") == "\xF0\x9F\x8E\x9E");                   // U+1F39E, valid
+#endif
     CHECK(round_trip("").empty());
+}
+
+TEST_CASE("the path forwarders equal the dvv-base names") {
+    for (const std::string& text : {std::string("clip.yuv"), std::string("Grüße-日本.yuv")}) {
+        CHECK(media::pathFromUtf8(text) == dvv::pathFromText(text));
+        const fs::path path = dvv::pathFromText(text);
+        CHECK(media::utf8FromPath(path) == dvv::pathText(path));
+    }
 }
 
 #if defined(_WIN32)
 // A Windows path is UTF-16 and may hold an unpaired surrogate, which has no UTF-8 form.
-TEST_CASE("utf8FromPath reports a path that is not representable") {
+TEST_CASE("utf8FromPath replaces an unpaired surrogate") {
     const fs::path path(std::wstring{L'a', static_cast<wchar_t>(0xD800), L'b'});
-    CHECK(media::utf8FromPath(path) == "(path not representable as UTF-8)");
+    CHECK(media::utf8FromPath(path) ==
+          "a\xEF\xBF\xBD"
+          "b");
 }
 #endif

@@ -20,7 +20,7 @@ inline constexpr std::size_t Y4M_MAX_HEADER = 4096;
 struct Y4mHeader {
     std::size_t bytes = 0;  // header length including its '\n'
     std::uint32_t width = 0, height = 0;
-    Rational fps{25, 1};
+    Rational fps = FALLBACK_FPS;
     FormatId format = 0;
     ColourRange range = ColourRange::Unspecified;
 };
@@ -30,7 +30,7 @@ struct Y4mHeader {
 // 4096 bytes, a missing or bad W or H (1..65535), a bad F<n>:<d>, an XCOLORRANGE other than FULL or
 // LIMITED, an empty tag, or another tag letter ("unknown Y4M header tag 'Q'"). Errc::Unsupported:
 // a header ending in "\r\n", or a C value outside the D15 mapping ("Y4M colourspace 'X' is not
-// supported"). F is reduced by the gcd; a missing F is 25/1, a missing C 420jpeg (yuv420p).
+// supported"). F is reduced by the gcd; a missing F is FALLBACK_FPS, a missing C 420jpeg (yuv420p).
 [[nodiscard]] Result<Y4mHeader> parseY4mHeader(std::span<const std::byte> head);
 
 }  // namespace dvv::media::detail

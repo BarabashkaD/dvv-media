@@ -1,7 +1,7 @@
 #pragma once
 
-// Frame size, format, fps and colour standard from a raw file's name (M2 design §4.5, D5R design
-// §3.4): <name>_WxH[_fmt][_fps][_colour]. Public so that a GUI can say what the name gave.
+// Frame size, format, fps and colour standard from a raw file's name:
+// <name>_WxH[_fmt][_fps][_colour]. Public so that a GUI can say what the name gave.
 
 #include <cstdint>
 #include <optional>

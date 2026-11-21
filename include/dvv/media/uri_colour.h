@@ -1,6 +1,6 @@
 #pragma once
 
-// The colour query parameters of source URIs (spec §6.3, §7.2; D5R design §3.1): colour (a
+// The colour query parameters of source URIs: colour (a
 // standard, colour_preset.h) and range. Every provider that takes colour overrides parses them
 // here (raw, synthetic and Y4M in dvv-media, the ffmpeg provider in dvv-components), and resolved
 // URIs write back the query's own form with colourParameters(ColourSpec). The keys matrix, kr, kb,
@@ -39,10 +39,10 @@ struct ColourSpec {
 [[nodiscard]] std::string unknownParameterText(std::string_view name);
 
 // colour=bt601-ntsc|bt601-pal|bt709|bt2020|bt2100-pq|bt2100-hlg; range=full|limited (allowed with
-// every standard and every format, U-D5-9). Errc::Format: "bad colour 'x' (bt601-ntsc, bt601-pal,
+// every standard and every format). Errc::Format: "bad colour 'x' (bt601-ntsc, bt601-pal,
 // bt709, bt2020, bt2100-pq, bt2100-hlg)" or "bad range 'x' (full, limited)".
 [[nodiscard]] Result<ColourSpec> colourSpecFromQuery(const Uri& uri);
-// The colour to render for a format of colour model `model` (D5R §1.3): the standard sets the
+// The colour to render for a format of colour model `model`: the standard sets the
 // matrix (YUV only; RGB and gray leave it Unspecified, resolveColour() gives Rgb), the transfer
 // and the primaries; the range comes only from spec.range, never from the standard (so a range the
 // file gives wins, else resolveColour()'s default: limited for YUV, full for RGB and gray). No
