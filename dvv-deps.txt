@@ -3,4 +3,4 @@ dvv-build 0.5.1
 dvv-base 0.5.0
 dvv-registry 0.2.0 @ade461077476a15db5e4851f83b2d682a950cdfb
 dvv-platform 0.3.0 @78b6085ffade366914e3734c9d4816b54e936127
-dvv-gpu 0.3.0 @6abc57086f69ea7da9d9a22be78d0fc8dffba546
+dvv-gpu 0.3.0 @8e897bf5e1f6ced1d88149b85b4f0e2d5239035a
