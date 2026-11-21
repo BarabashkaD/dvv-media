@@ -1,6 +1,6 @@
 #pragma once
 
-// Custom pixel formats as JSON (spec §7.3, M2 design D3). The schema is in the dvv-media README.
+// Custom pixel formats as JSON. The schema is in the dvv-media README.
 
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"

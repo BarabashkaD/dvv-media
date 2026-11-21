@@ -12,6 +12,7 @@
 
 #include "dvv/gpu/resources.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 
 namespace dvv::media {
@@ -104,19 +105,23 @@ void HostFrame::seal() noexcept {
 
 StagingFrame::StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format,
                            Domain domain, std::shared_ptr<gpu::GpuBuffer> buffer,
-                           FrameGeometry geometry) noexcept
+                           FrameGeometry geometry,
+                           std::unique_ptr<gpu::MappedRead> host_read) noexcept
     : Managed<StagingFrame>(std::move(key)),
       desc_(desc),
       buffer_(std::move(buffer)),
-      geometry_(geometry) {
-    const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, Api::VkBuffer, domain, 0};
-    if (buffer_ && buffer_->desc().memory == gpu::MemoryUsage::HostReadback) {
+      geometry_(geometry),
+      host_read_(std::move(host_read)) {
+    const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0};
+    if (buffer_ && host_read_ && buffer_->desc().memory == gpu::MemoryUsage::HostReadback) {
         ViewSpec host_view = buffer_view;
         host_view.api = Api::HostPlanes;
         views_[view_count_++] = host_view;
     }
     views_[view_count_++] = buffer_view;
 }
+
+StagingFrame::~StagingFrame() = default;
 
 std::span<const ViewSpec> StagingFrame::nativeViews() const noexcept {
     return std::span<const ViewSpec>(views_).first(view_count_);
@@ -126,18 +131,18 @@ Binding StagingFrame::bind(const ViewSpec& native) const {
     if (std::ranges::find(nativeViews(), native) == nativeViews().end()) {
         return HostPlanesB{};
     }
-    if (native.api == Api::VkBuffer) {
+    if (native.api == vulkan::BUFFER) {
         return VkBufferB{.buffer = buffer_, .offset = 0, .geometry = geometry_};
     }
     HostPlanesB planes;
-    const std::span<const std::byte> mapped = buffer_->mapped();
-    if (mapped.size() < geometry_.bytes) {
+    const std::span<const std::byte> read = host_read_->bytes();  // the view exists with a scope
+    if (read.size() < geometry_.bytes) {
         return planes;
     }
     for (std::size_t p = 0; p < geometry_.planeCount; ++p) {
         const PlaneGeometry& plane = geometry_.planes[p];
-        planes.planes[p] = mapped.subspan(static_cast<std::size_t>(plane.offset),
-                                          static_cast<std::size_t>(plane.stride) * plane.rows);
+        planes.planes[p] = read.subspan(static_cast<std::size_t>(plane.offset),
+                                        static_cast<std::size_t>(plane.stride) * plane.rows);
         planes.strides[p] = plane.stride;
     }
     planes.planeCount = geometry_.planeCount;
@@ -155,7 +160,7 @@ VkBufferFrame::VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain
                              FrameGeometry geometry) noexcept
     : Managed<VkBufferFrame>(std::move(key)),
       desc_(desc),
-      view_{desc.format, desc.colour, LayoutPolicy::Tight, Api::VkBuffer, domain, 0},
+      view_{desc.format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0},
       buffer_(std::move(buffer)),
       geometry_(geometry) {}
 
@@ -182,7 +187,7 @@ VkPlanesFrame::VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, Format
                              std::uint8_t plane_count) noexcept
     : Managed<VkPlanesFrame>(std::move(key)),
       desc_(desc),
-      view_{format, colour, LayoutPolicy::VkOptimal, Api::VkImage, domain, 0},
+      view_{format, colour, LayoutPolicy::Opaque, vulkan::IMAGE, domain, 0},
       planes_{.planes = std::move(planes), .planeCount = plane_count} {
     try {
         if (const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height)) {

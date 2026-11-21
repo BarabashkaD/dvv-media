@@ -14,7 +14,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -27,8 +26,10 @@
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/display.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/types.h"
@@ -41,6 +42,8 @@
 namespace media = dvv::media;
 namespace detail = dvv::media::detail;
 namespace gpu = dvv::gpu;
+
+static_assert(media::DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT);
 using dvv::Errc;
 using dvv::syncWait;
 using media::ColourMatrix;
@@ -111,7 +114,8 @@ struct DisplayStore {
         pool = dvv::ExecutorFactory::makeThreadPool(2).value();
         auto made =
             FrameStore::create({.cpu = pool, .io = pool, .gpu = test.context().shared_from_this()});
-        REQUIRE_MESSAGE(made.has_value(), made.error().describe());
+        REQUIRE_MESSAGE(made.has_value(),
+                        (made.has_value() ? std::string{} : made.error().describe()));
         store = std::move(*made);
         REQUIRE(store->deviceDomain().has_value());
         device = store->deviceDomain().value_or(media::Domain{});
@@ -123,27 +127,29 @@ struct DisplayStore {
 
 // The display image of a lease (REQUIREs one image).
 gpu::GpuImage& displayImageOf(const ReadLease& lease) {
-    const auto* images = std::get_if<media::VkImageB>(&lease.binding());
-    REQUIRE(images != nullptr);
-    REQUIRE(images->planeCount == 1);
-    REQUIRE(images->planes[0] != nullptr);
-    return *images->planes[0];
+    gpu::GpuImage* image = media::vulkan::image(lease, 0);
+    REQUIRE(image != nullptr);
+    REQUIRE(media::vulkan::image(lease, 1) == nullptr);
+    return *image;
 }
 
 // The half floats of an RGBA16F image, read back in one submission.
 std::vector<std::uint16_t> readHalves(GpuTest& test, gpu::GpuImage& image) {
     const std::uint64_t bytes = std::uint64_t{image.width()} * image.height() * 8;
-    auto buffer = test.context().createBuffer({.size = bytes,
-                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                               .memory = gpu::MemoryUsage::HostReadback,
-                                               .name = "display readback"});
-    REQUIRE_MESSAGE(buffer.has_value(), buffer.error().describe());
+    auto buffer = gpu::createBuffer(test.context(), {.size = bytes,
+                                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                     .memory = gpu::MemoryUsage::HostReadback,
+                                                     .name = "display readback"});
+    REQUIRE_MESSAGE(buffer.has_value(),
+                    (buffer.has_value() ? std::string{} : buffer.error().describe()));
     const std::shared_ptr<gpu::GpuBuffer> readback = std::move(*buffer);
     const auto submitted = test.submitAndWait(
         [&](gpu::CommandRecorder& recorder) { recorder.copyImageToBuffer(image, *readback); });
-    REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
-    REQUIRE(readback->invalidate().has_value());
-    const std::span<const std::byte> mapped = readback->mapped();
+    REQUIRE_MESSAGE(submitted.has_value(),
+                    (submitted.has_value() ? std::string{} : submitted.error().describe()));
+    const auto read = readback->mapRead();
+    REQUIRE_MESSAGE(read.has_value(), (read.has_value() ? std::string{} : read.error().describe()));
+    const std::span<const std::byte> mapped = read->bytes();
     REQUIRE(mapped.size() >= bytes);
     std::vector<std::uint16_t> halves(static_cast<std::size_t>(bytes / 2));
     std::memcpy(halves.data(), mapped.data(), static_cast<std::size_t>(bytes));
@@ -161,10 +167,11 @@ float halfStep(float value) {
 std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped,
                          const FrameDesc& desc, const std::vector<std::uint16_t>& halves,
                          std::optional<std::string>& first) {
-    const media::PixelFormatDescriptor& d = media::descriptor(format);
+    const media::PixelFormatDesc& d = media::formatDesc(format);
     const auto values =
         detail::generate(detail::Pattern::Noise, format, desc.width, desc.height, SEED, 0);
-    REQUIRE_MESSAGE(values.has_value(), values.error().describe());
+    REQUIRE_MESSAGE(values.has_value(),
+                    (values.has_value() ? std::string{} : values.error().describe()));
     const ColourParams resolved = media::resolveColour(desc).params;
     std::array<std::uint32_t, media::MAX_COMPONENTS> grid_width{};
     for (std::size_t k = 0; k < d.componentCount; ++k) {
@@ -229,13 +236,14 @@ std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped
 
 std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::uint32_t width,
                                          std::uint32_t height, VkFormat format, std::string name) {
-    auto image =
-        context.createImage({.width = width,
-                             .height = height,
-                             .format = format,
-                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                             .name = std::move(name)});
-    REQUIRE_MESSAGE(image.has_value(), image.error().describe());
+    auto image = gpu::createImage(
+        context, {.width = width,
+                  .height = height,
+                  .format = format,
+                  .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                  .name = std::move(name)});
+    REQUIRE_MESSAGE(image.has_value(),
+                    (image.has_value() ? std::string{} : image.error().describe()));
     return std::move(*image);
 }
 
@@ -243,7 +251,7 @@ std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::ui
 
 TEST_CASE_FIXTURE(GpuTest, "ToDisplay matches the CPU reference for every format and colour set") {
     for (const FormatId format : media::catalogue()) {
-        const media::PixelFormatDescriptor& d = media::descriptor(format);
+        const media::PixelFormatDesc& d = media::formatDesc(format);
         SUBCASE(d.name.c_str()) {
             const DisplayStore test(*this);
             const std::uint32_t multiple = std::max<std::uint32_t>(d.widthMultiple, 1);
@@ -258,13 +266,16 @@ TEST_CASE_FIXTURE(GpuTest, "ToDisplay matches the CPU reference for every format
                                      .height = 17};
                 const auto attached =
                     test.store->attach(std::make_shared<PackedSource>(desc, 1, SEED));
-                REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+                REQUIRE_MESSAGE(
+                    attached.has_value(),
+                    (attached.has_value() ? std::string{} : attached.error().describe()));
                 origins.push_back(*attached);
                 std::vector<std::uint16_t> halves;
                 {
                     const dvv::Result<ReadLease> lease = syncWait(test.store->acquire(
                         {*attached, 0}, media::displayView(test.device), executor()));
-                    REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+                    REQUIRE_MESSAGE(lease.has_value(),
+                                    (lease.has_value() ? std::string{} : lease.error().describe()));
                     CHECK(lease->fidelity() == Fidelity::Derived);
                     gpu::GpuImage& image = displayImageOf(*lease);
                     REQUIRE(image.width() == width);
@@ -301,12 +312,14 @@ TEST_CASE_FIXTURE(GpuTest, "ToDisplay: BT.2020 primaries give the BT.709 output 
                              .width = 32,
                              .height = 16};
         const auto attached = test.store->attach(std::make_shared<PackedSource>(desc, 1, SEED));
-        REQUIRE_MESSAGE(attached.has_value(), attached.error().describe());
+        REQUIRE_MESSAGE(attached.has_value(),
+                        (attached.has_value() ? std::string{} : attached.error().describe()));
         std::vector<std::uint16_t> halves;
         {
             const dvv::Result<ReadLease> lease = syncWait(
                 test.store->acquire({*attached, 0}, media::displayView(test.device), executor()));
-            REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+            REQUIRE_MESSAGE(lease.has_value(),
+                            (lease.has_value() ? std::string{} : lease.error().describe()));
             halves = readHalves(*this, displayImageOf(*lease));
         }
         test.store->detach(*attached);
@@ -332,16 +345,17 @@ TEST_CASE_FIXTURE(GpuTest, "the display path runs every converter once and then 
     {
         const dvv::Result<ReadLease> lease =
             syncWait(test.store->acquire(key, media::displayView(test.device), executor()));
-        REQUIRE_MESSAGE(lease.has_value(), lease.error().describe());
+        REQUIRE_MESSAGE(lease.has_value(),
+                        (lease.has_value() ? std::string{} : lease.error().describe()));
         CHECK(lease->fidelity() == Fidelity::Derived);
         CHECK(lease->view().format == media::displayFormat());
         CHECK(lease->view().colour == media::displayColour());
         const gpu::GpuImage& image = displayImageOf(*lease);
-        CHECK(image.format() == VK_FORMAT_R16G16B16A16_SFLOAT);
+        CHECK(gpu::vulkanFormat(image) == media::DISPLAY_IMAGE_FORMAT);
         CHECK(image.width() == 33);
         CHECK(image.height() == 17);
-        CHECK(image.layout() == VK_IMAGE_LAYOUT_GENERAL);
-        CHECK(image.view() != VK_NULL_HANDLE);
+        CHECK(gpu::vulkanLayout(image) == VK_IMAGE_LAYOUT_GENERAL);
+        CHECK(gpu::vulkanView(image) != VK_NULL_HANDLE);
     }
     const auto counts = [&] {
         const media::StoreStats stats = test.store->stats();
@@ -354,7 +368,8 @@ TEST_CASE_FIXTURE(GpuTest, "the display path runs every converter once and then 
     {
         const dvv::Result<ReadLease> again =
             syncWait(test.store->acquire(key, media::displayView(test.device), executor()));
-        REQUIRE_MESSAGE(again.has_value(), again.error().describe());
+        REQUIRE_MESSAGE(again.has_value(),
+                        (again.has_value() ? std::string{} : again.error().describe()));
     }
     CHECK(test.store->stats().hits == hits + 1);
     CHECK(counts() == std::array<std::uint64_t, 5>{1, 1, 1, 1, 1});
@@ -363,18 +378,20 @@ TEST_CASE_FIXTURE(GpuTest, "the display path runs every converter once and then 
 
 TEST_CASE_FIXTURE(GpuTest, "the ToDisplay pipeline binds five storage images and 96 bytes") {
     const auto pipeline = detail::createToDisplayPipeline(context());
-    REQUIRE_MESSAGE(pipeline.has_value(), pipeline.error().describe());
+    REQUIRE_MESSAGE(pipeline.has_value(),
+                    (pipeline.has_value() ? std::string{} : pipeline.error().describe()));
     CHECK((*pipeline)->bindings().storageImages == 5);
     CHECK((*pipeline)->pushConstantSize() == 96);
     const auto dummies = detail::createToDisplayDummies(context());
-    REQUIRE_MESSAGE(dummies.has_value(), dummies.error().describe());
+    REQUIRE_MESSAGE(dummies.has_value(),
+                    (dummies.has_value() ? std::string{} : dummies.error().describe()));
     for (std::size_t i = 0; i < dummies->images.size(); ++i) {
         CAPTURE(i);
         const auto& image = dummies->images[i];
         REQUIRE(image != nullptr);
         CHECK(image->width() == 1);
         CHECK(image->height() == 1);
-        CHECK(image->format() == VK_FORMAT_R16_UINT);
+        CHECK(gpu::vulkanFormat(*image) == VK_FORMAT_R16_UINT);
         for (std::size_t j = 0; j < i; ++j) {
             CHECK(image != dummies->images[j]);
         }
@@ -384,15 +401,17 @@ TEST_CASE_FIXTURE(GpuTest, "the ToDisplay pipeline binds five storage images and
 TEST_CASE_FIXTURE(GpuTest, "recordToDisplay checks its images") {
     const FormatId format = idOf("yuv420p");
     const auto pipeline = detail::createToDisplayPipeline(context());
-    REQUIRE_MESSAGE(pipeline.has_value(), pipeline.error().describe());
+    REQUIRE_MESSAGE(pipeline.has_value(),
+                    (pipeline.has_value() ? std::string{} : pipeline.error().describe()));
     const auto dummies = detail::createToDisplayDummies(context());
-    REQUIRE_MESSAGE(dummies.has_value(), dummies.error().describe());
+    REQUIRE_MESSAGE(dummies.has_value(),
+                    (dummies.has_value() ? std::string{} : dummies.error().describe()));
     const FrameDesc desc{.format = format, .colour = 0, .width = 4, .height = 4};
     const auto push = detail::toDisplayPush(format, media::resolveColour(desc).params, 4, 4);
-    REQUIRE_MESSAGE(push.has_value(), push.error().describe());
+    REQUIRE_MESSAGE(push.has_value(), (push.has_value() ? std::string{} : push.error().describe()));
     const auto y = makeImage(context(), 4, 4, VK_FORMAT_R8_UINT, "Y");
     const auto u = makeImage(context(), 2, 2, VK_FORMAT_R8_UINT, "U");
-    const auto output = makeImage(context(), 4, 4, VK_FORMAT_R16G16B16A16_SFLOAT, "display");
+    const auto output = makeImage(context(), 4, 4, media::DISPLAY_IMAGE_FORMAT, "display");
     const auto rgba8 = makeImage(context(), 4, 4, VK_FORMAT_R8G8B8A8_UNORM, "rgba8");
     const auto v = makeImage(context(), 2, 2, VK_FORMAT_R8_UINT, "V");
 
@@ -406,7 +425,8 @@ TEST_CASE_FIXTURE(GpuTest, "recordToDisplay checks its images") {
         wrong_output =
             detail::recordToDisplay(recorder, **pipeline, *push, format, three, *rgba8, *dummies);
     });
-    REQUIRE_MESSAGE(submitted.has_value(), submitted.error().describe());
+    REQUIRE_MESSAGE(submitted.has_value(),
+                    (submitted.has_value() ? std::string{} : submitted.error().describe()));
     REQUIRE(too_few.has_value());
     REQUIRE(wrong_output.has_value());
     const dvv::Result<void> few = too_few.value_or(dvv::Result<void>{});

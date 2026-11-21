@@ -9,10 +9,11 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "dvv/media/pixel_format.h"
@@ -46,20 +47,35 @@ Task<Result<FrameRef>> FakeSource::produce(std::int64_t index, ProduceContext& c
         co_return makeError(Errc::Internal, std::format("fake: frame {} out of range", index));
     }
     attempts.fetch_add(1);
+    std::optional<std::stop_callback<std::function<void()>>> stop_callback;
+    if (onStop) {
+        stop_callback.emplace(ctx.stopToken(), onStop);
+    }
     co_await resumeOn(ctx.io());
     if (gate != nullptr) {
         co_await gate->wait(ctx.io());
     }
+    sawStop.store(ctx.stopToken().stop_requested());
     if (takeOne(failNext)) {
-        co_return makeError(Errc::Io, "fake read error");
+        co_return makeError(failWith.load(), "fake read error");
     }
     if (throwNext.exchange(false)) {
         throw std::runtime_error("boom");
     }
     const FrameGeometry layout =
         co_try(geometry(info_.desc.format, info_.desc.width, info_.desc.height));
-    const std::shared_ptr<HostFrame> frame =
-        co_try(ctx.allocateHost(info_.desc, static_cast<std::size_t>(layout.bytes), 64, 0));
+    const auto capacity = static_cast<std::size_t>(layout.bytes);
+    const std::shared_ptr<HostFrame> frame = co_try(ctx.allocateHost(info_.desc, capacity, 64, 0));
+    while (takeOne(extraAllocations)) {
+        static_cast<void>(co_try(ctx.allocateHost(info_.desc, capacity, 64, 0)));
+    }
+    if (afterAllocate != nullptr) {
+        co_await afterAllocate->wait(ctx.io());
+        sawStop.store(ctx.stopToken().stop_requested());
+    }
+    if (takeOne(failAfterAllocate)) {
+        co_return makeError(Errc::Io, "fake read error");
+    }
     const std::span<std::byte> data = frame->data();
     for (std::size_t i = 0; i < data.size(); ++i) {
         data[i] = pattern(index, i);
@@ -91,14 +107,14 @@ Binding FakeFrame::bind(const ViewSpec& native) const {
 Task<Result<std::shared_ptr<IFrame>>> FakeConverter::run(detail::ConvertInput input,
                                                          detail::ConvertContext context) const {
     co_await resumeOn(context.cpu);
-    if (config_.gate != nullptr) {
+    if (config_.gate != nullptr && !takeOne(gateSkips)) {
         co_await config_.gate->wait(context.cpu);
     }
     runs.fetch_add(1);
     if (takeOne(failNext)) {
         co_return makeError(failWith.load(), "fake convert error");
     }
-    const auto* planes = std::get_if<HostPlanesB>(&input.binding);
+    const auto* planes = bindingIf<HostPlanesB>(input.binding);
     if (planes == nullptr || planes->planeCount == 0) {
         co_return makeError(Errc::Internal, "fake converter: the input has no host planes");
     }

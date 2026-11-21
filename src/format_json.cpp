@@ -152,10 +152,10 @@ template <class T>
 }
 
 // Step 1 of formatFromJson: the structure only; validate() checks the values.
-[[nodiscard]] Result<PixelFormatDescriptor> parseDescriptor(const json::Value& value) {
+[[nodiscard]] Result<PixelFormatDesc> parseDescriptor(const json::Value& value) {
     const std::string path;
     DVV_TRY_VOID(checkObject(value, path, FORMAT_KEYS));
-    PixelFormatDescriptor d;
+    PixelFormatDesc d;
     auto name = json::get<std::string>(value, "name");
     if (!name) {
         return malformed("name", name.error().message);
@@ -182,7 +182,7 @@ template <class T>
 }  // namespace
 
 json::Value formatToJson(FormatId format) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     if (d.name.empty()) {
         return {};  // unknown id: every interned format has a non-empty name
     }
@@ -229,7 +229,7 @@ json::Value formatToJson(FormatId format) {
 }
 
 Result<FormatId> formatFromJson(const json::Value& value) {
-    DVV_TRY(const PixelFormatDescriptor descriptor, parseDescriptor(value));
+    DVV_TRY(const PixelFormatDesc descriptor, parseDescriptor(value));
     for (const std::string_view suffix : {UNPACKED_SUFFIX, DISPLAY_SUFFIX}) {
         if (descriptor.name.ends_with(suffix)) {
             return makeError(Errc::Format,

@@ -12,7 +12,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 
 namespace media = dvv::media;
 
@@ -26,7 +25,7 @@ constexpr std::array<std::string_view, 3> EXPECTED_PROVIDERS{"raw", "synthetic",
 TEST_CASE("providers: conformance") {
     auto& lifetimes = dvv::LifetimeRegistry::instance();
     const auto registry = dvv::ComponentRegistry::create(dvv::Capabilities{});
-    const auto statuses = registry->list(dvv::Kind::Source);
+    const auto statuses = registry->list<media::ISourceProvider>();
 
     std::vector<std::string_view> ids;
     ids.reserve(statuses.size());
@@ -39,10 +38,8 @@ TEST_CASE("providers: conformance") {
 
     for (const auto& status : statuses) {
         INFO(std::string(status.info.id));
-        // Neither schema() nor probe() threw, and nothing is needed beyond no capabilities.
+        // probe() did not throw, and nothing is needed beyond no capabilities.
         CHECK(status.available());
-        REQUIRE(status.schema != nullptr);
-        CHECK(status.schema->resolve({}).has_value());
 
         const std::size_t live_before = lifetimes.liveCount();
         {

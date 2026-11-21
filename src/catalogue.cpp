@@ -55,11 +55,10 @@ PlaneDesc plane(const PlaneLayout& layout, std::initializer_list<SampleSlot> slo
     return result;
 }
 
-PixelFormatDescriptor format(std::string name, ColourModel model,
-                             std::initializer_list<ComponentDesc> components,
-                             std::initializer_list<PlaneDesc> planes,
-                             std::uint8_t width_multiple = 1) {
-    PixelFormatDescriptor result;
+PixelFormatDesc format(std::string name, ColourModel model,
+                       std::initializer_list<ComponentDesc> components,
+                       std::initializer_list<PlaneDesc> planes, std::uint8_t width_multiple = 1) {
+    PixelFormatDesc result;
     result.name = std::move(name);
     result.model = model;
     for (const ComponentDesc& c : components) {
@@ -87,14 +86,14 @@ PlaneDesc planarPlane(std::uint8_t component, std::uint8_t word_bytes, std::uint
                  {slot(component, 0, 0)});
 }
 
-PixelFormatDescriptor gray(std::string name, std::uint8_t bits, ByteOrder order = LE) {
+PixelFormatDesc gray(std::string name, std::uint8_t bits, ByteOrder order = LE) {
     return format(std::move(name), ColourModel::Gray, {component(ComponentKind::Y, bits)},
                   {planarPlane(Y, wordBytesFor(bits), 0, 0, order)});
 }
 
 // Y, U, V planes (yuv4xxp*).
-PixelFormatDescriptor yuvPlanar(std::string name, std::uint8_t bits, std::uint8_t log2_sub_x,
-                                std::uint8_t log2_sub_y, ByteOrder order = LE) {
+PixelFormatDesc yuvPlanar(std::string name, std::uint8_t bits, std::uint8_t log2_sub_x,
+                          std::uint8_t log2_sub_y, ByteOrder order = LE) {
     const std::uint8_t word_bytes = wordBytesFor(bits);
     return format(std::move(name), ColourModel::Yuv,
                   {component(ComponentKind::Y, bits),
@@ -106,7 +105,7 @@ PixelFormatDescriptor yuvPlanar(std::string name, std::uint8_t bits, std::uint8_
 }
 
 // G, B, R planes (gbrp*).
-PixelFormatDescriptor gbrPlanar(std::string name, std::uint8_t bits) {
+PixelFormatDesc gbrPlanar(std::string name, std::uint8_t bits) {
     const std::uint8_t word_bytes = wordBytesFor(bits);
     return format(std::move(name), ColourModel::Rgb,
                   {component(ComponentKind::R, bits), component(ComponentKind::G, bits),
@@ -122,30 +121,30 @@ std::array<ComponentDesc, 3> yuv(std::uint8_t bits, std::uint8_t log2_sub_y) {
             component(ComponentKind::V, bits, 1, log2_sub_y)};
 }
 
-PixelFormatDescriptor yuvFormat(std::string name, std::uint8_t bits, std::uint8_t log2_sub_y,
-                                std::initializer_list<PlaneDesc> planes,
-                                std::uint8_t width_multiple = 1) {
+PixelFormatDesc yuvFormat(std::string name, std::uint8_t bits, std::uint8_t log2_sub_y,
+                          std::initializer_list<PlaneDesc> planes,
+                          std::uint8_t width_multiple = 1) {
     const std::array<ComponentDesc, 3> c = yuv(bits, log2_sub_y);
     return format(std::move(name), ColourModel::Yuv, {c[0], c[1], c[2]}, planes, width_multiple);
 }
 
-PixelFormatDescriptor rgb(std::string name, std::uint8_t bits, const PlaneLayout& layout,
-                          std::initializer_list<SampleSlot> slots) {
+PixelFormatDesc rgb(std::string name, std::uint8_t bits, const PlaneLayout& layout,
+                    std::initializer_list<SampleSlot> slots) {
     return format(std::move(name), ColourModel::Rgb,
                   {component(ComponentKind::R, bits), component(ComponentKind::G, bits),
                    component(ComponentKind::B, bits)},
                   {plane(layout, slots)});
 }
 
-PixelFormatDescriptor rgba(std::string name, std::uint8_t bits, const PlaneLayout& layout,
-                           std::initializer_list<SampleSlot> slots) {
+PixelFormatDesc rgba(std::string name, std::uint8_t bits, const PlaneLayout& layout,
+                     std::initializer_list<SampleSlot> slots) {
     return format(std::move(name), ColourModel::Rgb,
                   {component(ComponentKind::R, bits), component(ComponentKind::G, bits),
                    component(ComponentKind::B, bits), component(ComponentKind::A, bits)},
                   {plane(layout, slots)});
 }
 
-std::array<PixelFormatDescriptor, CATALOGUE_SIZE> makeBuiltInFormats() {
+std::array<PixelFormatDesc, CATALOGUE_SIZE> makeBuiltInFormats() {
     return {
         gray("gray", 8),                         // 0
         gray("gray10le", 10),                    // 1
@@ -228,8 +227,8 @@ std::array<PixelFormatDescriptor, CATALOGUE_SIZE> makeBuiltInFormats() {
 
 }  // namespace
 
-std::span<const PixelFormatDescriptor> builtInFormats() {
-    static const std::array<PixelFormatDescriptor, CATALOGUE_SIZE> FORMATS = makeBuiltInFormats();
+std::span<const PixelFormatDesc> builtInFormats() {
+    static const std::array<PixelFormatDesc, CATALOGUE_SIZE> FORMATS = makeBuiltInFormats();
     return FORMATS;
 }
 

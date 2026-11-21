@@ -1,6 +1,7 @@
 #pragma once
 // Converters (M2 design §5.3): edges of the store's static graph. Private to dvv-media.
 
+#include <cstddef>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "dvv/base/task.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/types.h"
 
 namespace dvv::media {
@@ -33,7 +35,7 @@ inline constexpr StateKey PRODUCED{
     .unpacked = false, .api = Api::HostPlanes, .kind = MemKind::Host};
 // What ToDisplay makes: the display image in device memory (displayFormat(), displayColour()).
 inline constexpr StateKey DISPLAY_STATE{
-    .unpacked = false, .api = Api::VkImage, .kind = MemKind::DeviceLocal, .display = true};
+    .unpacked = false, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal, .display = true};
 
 struct ConvertInput {
     const FrameKey& key;     // the key being converted
@@ -64,6 +66,8 @@ public:
     [[nodiscard]] virtual Fidelity fidelity() const noexcept = 0;
     // Weighted bytes moved (§5.3): host copy 1x, PCIe 2x, GPU-local 0.5x, CPU unpack 4x.
     [[nodiscard]] virtual double cost(const FrameDesc& desc) const noexcept = 0;
+    // The bytes the output frame will report (IFrame::bytes) for `desc`; reserved before run().
+    [[nodiscard]] virtual std::size_t outputBytes(const FrameDesc& desc) const noexcept = 0;
     // Makes the output frame. Hops to its own executor itself (cpu, or a GPU submission that
     // resumes on cpu); a GPU converter co_awaits its submission (D10).
     [[nodiscard]] virtual Task<Result<std::shared_ptr<IFrame>>> run(

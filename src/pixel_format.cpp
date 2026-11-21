@@ -32,7 +32,7 @@ constexpr std::uint64_t MAX_PLANE_BYTES = 0xFFFFFFFFU;
 // One interned format. The descriptor and `unpacked` never change after interning; `unpackedId` is
 // guarded by the table mutex.
 struct Entry {
-    PixelFormatDescriptor descriptor;
+    PixelFormatDesc descriptor;
     bool unpacked = false;
     std::optional<FormatId> unpackedId{};
 };
@@ -42,12 +42,12 @@ struct Entry {
 struct FormatTable {
     std::shared_mutex mutex;
     std::vector<std::unique_ptr<Entry>> entries;
-    const PixelFormatDescriptor empty{};
+    const PixelFormatDesc empty{};
 
     FormatTable() {
-        const std::span<const PixelFormatDescriptor> built_in = detail::builtInFormats();
+        const std::span<const PixelFormatDesc> built_in = detail::builtInFormats();
         entries.reserve(built_in.size());
-        for (const PixelFormatDescriptor& descriptor : built_in) {
+        for (const PixelFormatDesc& descriptor : built_in) {
             entries.push_back(std::make_unique<Entry>(Entry{.descriptor = descriptor}));
         }
     }
@@ -65,7 +65,7 @@ FormatTable& formatTable() {
     return *table;
 }
 
-[[nodiscard]] std::unexpected<Error> invalid(const PixelFormatDescriptor& descriptor,
+[[nodiscard]] std::unexpected<Error> invalid(const PixelFormatDesc& descriptor,
                                              std::string_view reason) {
     return makeError(Errc::Format, std::format("pixel format '{}': {}", descriptor.name, reason));
 }
@@ -86,7 +86,7 @@ FormatTable& formatTable() {
 }
 
 // Gray: Y[, A]; Yuv: Y, U, V[, A]; Rgb: R, G, B[, A] (D5).
-[[nodiscard]] bool componentsMatchModel(const PixelFormatDescriptor& descriptor) noexcept {
+[[nodiscard]] bool componentsMatchModel(const PixelFormatDesc& descriptor) noexcept {
     std::array<ComponentKind, MAX_COMPONENTS> canonical{};
     std::size_t colour_count = 0;
     switch (descriptor.model) {
@@ -116,8 +116,7 @@ FormatTable& formatTable() {
     return true;
 }
 
-[[nodiscard]] bool isValidSubsampling(const PixelFormatDescriptor& descriptor,
-                                      std::size_t c) noexcept {
+[[nodiscard]] bool isValidSubsampling(const PixelFormatDesc& descriptor, std::size_t c) noexcept {
     const ComponentDesc& component = descriptor.components[c];
     switch (component.kind) {
         case ComponentKind::U:
@@ -170,7 +169,7 @@ FormatTable& formatTable() {
     return count == n;
 }
 
-[[nodiscard]] Result<void> validatePlanes(const PixelFormatDescriptor& d) {
+[[nodiscard]] Result<void> validatePlanes(const PixelFormatDesc& d) {
     // Rule 6: the plane layout.
     for (std::size_t p = 0; p < d.planeCount; ++p) {
         const PlaneDesc& plane = d.planes[p];
@@ -265,8 +264,8 @@ FormatTable& formatTable() {
 }
 
 // The lossless planar form of a format (D5): one plane per component, one sample per group.
-[[nodiscard]] PixelFormatDescriptor makeUnpacked(const PixelFormatDescriptor& source) {
-    PixelFormatDescriptor result;
+[[nodiscard]] PixelFormatDesc makeUnpacked(const PixelFormatDesc& source) {
+    PixelFormatDesc result;
     result.name = source.name + std::string(UNPACKED_SUFFIX);
     result.model = source.model;
     result.componentCount = source.componentCount;
@@ -291,8 +290,8 @@ FormatTable& formatTable() {
 
 }  // namespace
 
-Result<void> validate(const PixelFormatDescriptor& descriptor) {
-    const PixelFormatDescriptor& d = descriptor;
+Result<void> validate(const PixelFormatDesc& desc) {
+    const PixelFormatDesc& d = desc;
     // Rule 1.
     if (!isValidName(d.name)) {
         return invalid(d, "invalid name");
@@ -337,7 +336,7 @@ std::span<const FormatId> catalogue() {
     return IDS;
 }
 
-const PixelFormatDescriptor& descriptor(FormatId format) noexcept {
+const PixelFormatDesc& formatDesc(FormatId format) noexcept {
     FormatTable& table = formatTable();
     const Entry* entry = table.find(format);
     return entry != nullptr ? entry->descriptor : table.empty;
@@ -411,12 +410,12 @@ bool isUnpacked(FormatId format) noexcept {
     return entry != nullptr && entry->unpacked;
 }
 
-Result<FormatId> detail::internCustomFormat(const PixelFormatDescriptor& descriptor) {
+Result<FormatId> detail::internCustomFormat(const PixelFormatDesc& descriptor) {
     FormatTable& table = formatTable();
     auto entry = std::make_unique<Entry>(Entry{.descriptor = descriptor});
     const std::unique_lock lock(table.mutex);
     for (std::size_t id = 0; id < table.entries.size(); ++id) {
-        const PixelFormatDescriptor& existing = table.entries[id]->descriptor;
+        const PixelFormatDesc& existing = table.entries[id]->descriptor;
         if (existing.name != descriptor.name) {
             continue;
         }
@@ -441,7 +440,7 @@ Result<FrameGeometry> geometry(FormatId format, std::uint32_t width, std::uint32
     if (entry == nullptr) {
         return makeError(Errc::Internal, std::format("unknown format id {}", format));
     }
-    const PixelFormatDescriptor& d = entry->descriptor;
+    const PixelFormatDesc& d = entry->descriptor;
     if (width == 0 || height == 0) {
         return makeError(Errc::Format,
                          std::format("{}: frame size {}x{} is empty", d.name, width, height));

@@ -1,9 +1,9 @@
 #pragma once
 
-// The colour standards (D5R design §1): each names a standard and fills the four colour fields
+// The colour standards: each names a standard and fills the four colour fields
 // (matrix, range, transfer, primaries). The URI key `colour=<uriName>` (uri_colour.h), the clip
 // description JSON and the format dialog use them. A standard's range is its default only: a range
-// the file gives always wins (D5R §1.3), and `range=` may pick the other one (U-D5-9).
+// the file gives always wins, and `range=` may pick the other one.
 
 #include <array>
 #include <cstdint>
@@ -53,7 +53,7 @@ struct FileHint {
     bool operator==(const FileHint&) const = default;
 };
 
-// The standard that the given fields point to (D5R §3.3 as aligned by Task 0); the range is
+// The standard that the given fields point to; the range is
 // ignored. Order: transfer PQ or HLG gives BT.2100; else the matrix (YUV formats only, not the GBR
 // matrix) names BT.2020, BT.709 or BT.601; else the primaries name it; nothing given gives BT.709
 // ("colour not signalled"). BT.601 is NTSC or PAL by the primaries, else by `hint.bt601`, else PAL.
@@ -65,15 +65,15 @@ struct FileHint {
 
 // The range when neither the URI nor the file gives one: limited for YUV, full for RGB and gray.
 [[nodiscard]] ColourRange defaultRange(ColourModel model) noexcept;
-// True when `range` is not the range of `preset` on `model` (U-D5-9 "(not standard)" note): full
-// range with BT.601, BT.709 or BT.2020 on a YUV format.
+// True when `range` is not the range of `preset` on `model` (a GUI may mark it "not standard"):
+// full range with BT.601, BT.709 or BT.2020 on a YUV format.
 [[nodiscard]] bool rangeNotStandard(ColourPreset preset, ColourModel model,
                                     ColourRange range) noexcept;
 
-// U-D5-8 "Auto detect": the usual standard of an untagged picture `height` lines high (<= 480
+// "Auto detect": the usual standard of an untagged picture `height` lines high (<= 480
 // lines: BT.601 (NTSC); <= 576: BT.601 (PAL); else BT.709).
 [[nodiscard]] ColourPreset guessStandard(std::uint32_t height) noexcept;
-// U-D5-8 mismatch hint: "SD size: BT.601 is common for SD" for BT.709, BT.2020 or BT.2100 at 576
+// Mismatch hint: "SD size: BT.601 is common for SD" for BT.709, BT.2020 or BT.2100 at 576
 // lines or less; "HD size: BT.709 is common" for BT.601 above 576 lines; else "".
 [[nodiscard]] std::string_view sizeHint(ColourPreset preset, std::uint32_t height) noexcept;
 

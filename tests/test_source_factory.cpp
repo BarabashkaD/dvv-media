@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -8,9 +9,12 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -20,9 +24,11 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
+#include "dvv/platform/file_reader.h"
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
@@ -208,7 +214,8 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: no confidence is Unsupported naming eve
     CHECK(media::isNoProviderMatch(result.error()));
 }
 
-// rawreel's format dialog is only for a request no provider could match, never for a refusal.
+// An application's format dialog is only for a request no provider could match, never for a
+// refusal.
 TEST_CASE_FIXTURE(FactoryTest, "factory: isNoProviderMatch tells no match from a refusal") {
     SUBCASE("a provider that matches and refuses in open") {
         a().confidence = 95;
@@ -299,7 +306,7 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: an unknown scheme is Unsupported") {
 TEST_CASE_FIXTURE(FactoryTest, "factory: a missing file is Io before any match") {
     const TemporaryDirectory directory;
     a().confidence = 95;
-    const std::string path = media::utf8FromPath(directory.path() / "missing.bin");
+    const std::string path = dvv::pathText(directory.path() / "missing.bin");
     checkError(open(path), dvv::Errc::Io);
     CHECK(a().matchCalls == 0);
     CHECK(b().matchCalls == 0);
@@ -312,14 +319,14 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: the file head is passed to match") {
 
     const auto large = patternBytes(5000);
     writeFile(directory.path() / "large.bin", large);
-    const auto opened_large = open(media::utf8FromPath(directory.path() / "large.bin"));
+    const auto opened_large = open(dvv::pathText(directory.path() / "large.bin"));
     CHECK(sourceOf(opened_large).info().provider == "fake_a");
     REQUIRE(a().lastHead.size() == 4096);
     CHECK(std::equal(a().lastHead.begin(), a().lastHead.end(), large.begin()));
 
     const auto small = patternBytes(10);
     writeFile(directory.path() / "small.bin", small);
-    const auto opened_small = open(media::utf8FromPath(directory.path() / "small.bin"));
+    const auto opened_small = open(dvv::pathText(directory.path() / "small.bin"));
     CHECK(sourceOf(opened_small).info().provider == "fake_a");
     CHECK(a().lastHead == small);
 }
@@ -328,7 +335,7 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: the sidecar <file>.json is passed to ma
     const TemporaryDirectory directory;
     a().confidence = 95;
     writeFile(directory.path() / "clip.bin", patternBytes(10));
-    const std::string path = media::utf8FromPath(directory.path() / "clip.bin");
+    const std::string path = dvv::pathText(directory.path() / "clip.bin");
 
     // No sidecar file: no sidecar and no error.
     CHECK(sourceOf(open(path)).info().provider == "fake_a");
@@ -409,7 +416,115 @@ TEST_CASE("factory: create without available providers is Unsupported") {
     const auto created = media::SourceFactory::create(*registry, *pool);
     REQUIRE_FALSE(created.has_value());
     CHECK(created.error().code == dvv::Errc::Unsupported);
-    CHECK(created.error().message == "no source providers registered");
+    CHECK(created.error().message ==
+          "no source providers registered; unavailable: "
+          "fake2 (missing capability 'fake2'), fake_a (missing capability 'fake'), "
+          "fake_b (missing capability 'fake'), fake_c (missing capability 'fake'), "
+          "gated (missing capability 'fake')");
+}
+
+constexpr std::string_view FAKE2_REASON = "missing capability 'fake2'";
+constexpr std::string_view UNAVAILABLE_MARK = "; unavailable: ";
+
+// A fixture whose registry has both capabilities, so no provider is unavailable.
+class FullFactoryTest {
+public:
+    FullFactoryTest() {
+        fakes::resetScripts();
+        registry = dvv::ComponentRegistry::create(dvv::Capabilities{"fake", "fake2"});
+        auto pool = dvv::ExecutorFactory::makeThreadPool(2);
+        REQUIRE(pool.has_value());
+        io = std::move(*pool);
+        auto created = media::SourceFactory::create(*registry, io);
+        REQUIRE(created.has_value());
+        factory = std::move(*created);
+    }
+
+    [[nodiscard]] OpenResult open(std::string_view text) const {
+        auto uri = dvv::parseUri(text);
+        REQUIRE(uri.has_value());
+        return dvv::syncWait(factory->open({.uri = *uri, .hint = std::nullopt}));
+    }
+
+    std::unique_ptr<dvv::ComponentRegistry> registry;
+    std::shared_ptr<dvv::ThreadPool> io;
+    std::unique_ptr<media::SourceFactory> factory;
+};
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: an unavailable provider is named in a no-match error") {
+    const auto result = open("fake2:x");
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(media::isNoProviderMatch(result.error()));
+    CHECK(result.error().message.ends_with("; unavailable: fake2 (missing capability 'fake2')"));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: unavailableProviders lists the skipped providers") {
+    const auto listed = factory->unavailableProviders();
+    REQUIRE(listed.size() == 1);
+    CHECK(listed[0].id == "fake2");
+    CHECK(listed[0].reason == FAKE2_REASON);
+    CHECK(listed[0].capability == "fake2");
+}
+
+TEST_CASE_FIXTURE(FullFactoryTest,
+                  "factory: unavailableProviders is empty when all are available") {
+    CHECK(factory->unavailableProviders().empty());
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: ?impl= naming an unavailable provider") {
+    dvv::Uri uri;
+    uri.scheme = "fake";
+    uri.path = "x";
+    uri.params.emplace_back("impl", "fake2");
+    const auto result = dvv::syncWait(factory->open({.uri = uri, .hint = std::nullopt}));
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(result.error().message ==
+          "source provider 'fake2' is unavailable: missing capability 'fake2'");
+    CHECK_FALSE(media::isNoProviderMatch(result.error()));
+}
+
+// fake2 is the only provider of its scheme; naming it with ?impl= is still the unavailable error,
+// not the scheme's no-match.
+TEST_CASE_FIXTURE(FactoryTest,
+                  "factory: ?impl= naming the scheme's only provider when it is unavailable") {
+    dvv::Uri uri;
+    uri.scheme = "fake2";
+    uri.path = "x";
+    uri.params.emplace_back("impl", "fake2");
+    const auto result = dvv::syncWait(factory->open({.uri = uri, .hint = std::nullopt}));
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(result.error().message ==
+          "source provider 'fake2' is unavailable: missing capability 'fake2'");
+    CHECK_FALSE(media::isNoProviderMatch(result.error()));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: the ?impl= no-match names the unavailable providers") {
+    b().why = "why b";
+    const auto result = openWithImpl("fake_b");  // fake:x?impl=fake_b, confidence 0
+    checkError(result, dvv::Errc::Unsupported);
+    CHECK(media::isNoProviderMatch(result.error()));
+    const std::string& text = result.error().message;
+    CHECK(text.starts_with("fake_b cannot open '"));
+    CHECK(text.ends_with("': why b; unavailable: fake2 (missing capability 'fake2')"));
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: the reasons part of a no-match text is unchanged") {
+    a().why = "why a";
+    b().why = "why b";
+    c().why = "why c";
+    const auto with_unavailable = open("fake:x");
+    checkError(with_unavailable, dvv::Errc::Unsupported);
+    const FullFactoryTest full;
+    fakes::script("fake_a").why = "why a";
+    fakes::script("fake_b").why = "why b";
+    fakes::script("fake_c").why = "why c";
+    const auto without = full.open("fake:x");
+    checkError(without, dvv::Errc::Unsupported);
+    const std::string& text = with_unavailable.error().message;
+    const std::size_t mark = text.find(UNAVAILABLE_MARK);
+    REQUIRE(mark != std::string::npos);
+    CHECK(text.substr(0, mark) == without.error().message);
+    CHECK(without.error().message.find(UNAVAILABLE_MARK) == std::string::npos);
 }
 
 TEST_CASE("factory: create with a null io executor is Internal") {
@@ -430,4 +545,102 @@ TEST_CASE("factory: InterfaceKind of ISourceProvider is Source") {
     static_assert(dvv::InterfaceKind<media::ISourceProvider>::value == dvv::Kind::Source);
     static_assert(dvv::HasInterfaceKind<media::ISourceProvider>);
     CHECK(true);
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: open returns Cancelled for a stopped token") {
+    SUBCASE("stopped before the open: no provider open runs") {
+        a().confidence = 95;
+        std::stop_source source;
+        source.request_stop();
+        auto uri = dvv::parseUri("fake:x");
+        REQUIRE(uri.has_value());
+        const auto result = dvv::syncWait(
+            factory->open({.uri = uri.value(), .hint = std::nullopt}, source.get_token()));
+        checkError(result, dvv::Errc::Cancelled);
+        CHECK(result.error().message == "the open was cancelled");
+        CHECK(a().openCalls == 0);
+        CHECK(b().openCalls == 0);
+        CHECK(c().openCalls == 0);
+        CHECK(fakes::gated().opens == 0);
+    }
+    SUBCASE("stopped while the provider waits: the source is destroyed") {
+        auto uri = dvv::parseUri("gated:x");
+        REQUIRE(uri.has_value());
+        const int destroyed_before = fakes::gated().destroyed;
+        std::stop_source source;
+        std::optional<OpenResult> result;
+        std::thread opener([&] {
+            result = dvv::syncWait(
+                factory->open({.uri = uri.value(), .hint = std::nullopt}, source.get_token()));
+        });
+        bool reached = false;
+        for (int i = 0; i < 10000 && !reached; ++i) {
+            reached = fakes::gated().waiting() == 1;
+            if (!reached) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        source.request_stop();
+        fakes::gated().open();
+        opener.join();
+        CHECK(reached);
+        CHECK(result.has_value());
+        if (result) {
+            checkError(*result, dvv::Errc::Cancelled);
+            CHECK(result->error().message == "the open was cancelled");
+        }
+        CHECK(fakes::gated().sawStop);
+        CHECK(fakes::gated().destroyed == destroyed_before + 1);
+    }
+}
+
+TEST_CASE_FIXTURE(FactoryTest, "factory: open(request) equals open(request, {})") {
+    a().confidence = 95;
+    b().confidence = 30;
+    auto uri = dvv::parseUri("fake:x");
+    REQUIRE(uri.has_value());
+    const media::SourceRequest request{.uri = uri.value(), .hint = std::nullopt};
+    const auto plain = dvv::syncWait(factory->open(request));
+    const auto with_token = dvv::syncWait(factory->open(request, {}));
+    CHECK(sourceOf(plain).info().provider == "fake_a");
+    CHECK(sourceOf(with_token).info().provider == "fake_a");
+    CHECK(sourceOf(plain).info().resolvedUri == sourceOf(with_token).info().resolvedUri);
+}
+
+// The overload shapes (compile-only).
+static_assert(requires(media::SourceFactory& f, const media::SourceRequest& r, std::stop_token t) {
+    f.open(r);
+    f.open(r, t);
+    f.open(r, {});
+    f.open(r, std::stop_token{});
+});
+static_assert(std::is_same_v<decltype(std::declval<media::SourceFactory&>().open(
+                                 std::declval<const media::SourceRequest&>())),
+                             dvv::Task<dvv::Result<media::SourceFactory::OpenResult>>>);
+
+static_assert(media::DEFAULT_FILE_READS == dvv::platform::FileReadMode::Auto);
+
+TEST_CASE("a SourceRequest reads files with DEFAULT_FILE_READS") {
+    CHECK(media::SourceRequest{}.fileReads == media::DEFAULT_FILE_READS);
+}
+
+// Kept until 1.0.0: the aggregate forms of 0.1.1 still compile (-Werror).
+TEST_CASE("OpenContext and SourceRequest keep their 0.1.1 initialisers") {
+    const auto io = dvv::ExecutorFactory::makeThreadPool(1);
+    REQUIRE(io.has_value());
+    const media::OpenContext positional{*io.value()};
+    const media::OpenContext designated{.io = *io.value()};
+    CHECK_FALSE(positional.stop.stop_possible());
+    CHECK_FALSE(designated.stop.stop_possible());
+
+    const auto uri = dvv::parseUri("file:x.raw");
+    REQUIRE(uri.has_value());
+    const media::SourceRequest four{uri.value(), std::nullopt, dvv::platform::FileReadMode::Auto,
+                                    std::nullopt};
+    const media::SourceRequest uri_only{uri.value()};
+    const media::SourceRequest reads_only{.uri = uri.value(),
+                                          .fileReads = dvv::platform::FileReadMode::Auto};
+    CHECK_FALSE(uri_only.hint.has_value());
+    CHECK_FALSE(reads_only.hint.has_value());
+    CHECK(four.uri.path == uri.value().path);
 }

@@ -26,8 +26,10 @@
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
+#include "dvv/base/utf8.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/pixel_format.h"
+#include "dvv/media/rate_size_text.h"
 #include "dvv/media/source.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
@@ -35,7 +37,6 @@
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
-#include "dvv/registry/parameters.h"
 #include "math_util.h"
 #include "sources/file_read.h"
 #include "sources/uri_params.h"
@@ -214,22 +215,22 @@ struct Opened {
 
 // The query must agree with the header: fmt, size and fps are checks only.
 Result<void> checkQuery(const Uri& uri, const detail::Y4mHeader& header) {
-    const std::string_view name = descriptor(header.format).name;
+    const std::string_view name = formatDesc(header.format).name;
     if (const auto fmt = uri.param("fmt"); fmt && *fmt != name) {
         return makeError(Errc::Format, std::format("Y4M header says {}", name));
     }
     if (const auto text = uri.param("size")) {
-        DVV_TRY(const auto size, detail::parseSize(*text));
+        DVV_TRY(const auto size, parseSize(*text));
         if (size != std::pair{header.width, header.height}) {
             return makeError(Errc::Format,
                              std::format("Y4M header says {}x{}", header.width, header.height));
         }
     }
     if (const auto text = uri.param("fps")) {
-        DVV_TRY(const Rational fps, detail::parseFps(*text));
+        DVV_TRY(const Rational fps, parseFps(*text));
         if (fps != header.fps) {
             return makeError(Errc::Format,
-                             std::format("Y4M header says {}", detail::formatFps(header.fps)));
+                             std::format("Y4M header says {}", formatFps(header.fps)));
         }
     }
     return {};
@@ -261,7 +262,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     DVV_TRY_VOID(detail::checkParameters(uri, ALLOWED));
     DVV_TRY(const ColourSpec query_spec, colourSpecFromQuery(uri));
     DVV_TRY(platform::FileReader reader,
-            platform::FileReader::open(pathFromUtf8(uri.path), request.fileReads));
+            platform::FileReader::open(dvv::pathFromText(uri.path), request.fileReads));
 
     // The header lies in the first Y4M_MAX_HEADER bytes; an unbuffered read needs an aligned
     // whole buffer.
@@ -275,7 +276,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     DVV_TRY(const detail::Y4mHeader header,
             detail::parseY4mHeader(std::span<const std::byte>(buffer.get(), head_bytes)));
     DVV_TRY_VOID(checkQuery(uri, header));
-    const ColourParams query_colour = merged(query_spec, descriptor(header.format).model);
+    const ColourParams query_colour = merged(query_spec, formatDesc(header.format).model);
 
     DVV_TRY(const FrameGeometry frame, geometry(header.format, header.width, header.height));
     const std::uint64_t frame_bytes = frame.bytes;
@@ -286,9 +287,9 @@ Result<Opened> openFile(const SourceRequest& request) {
     resolved.scheme = "file";
     resolved.path = uri.path;
     resolved.params = {
-        {"fmt", std::string(descriptor(header.format).name)},
+        {"fmt", std::string(formatDesc(header.format).name)},
         {"size", std::format("{}x{}", header.width, header.height)},
-        {"fps", detail::formatFps(header.fps)},
+        {"fps", formatFps(header.fps)},
     };
     std::ranges::move(colourParameters(query_spec), std::back_inserter(resolved.params));
     resolved.params.emplace_back("impl", "y4m");
@@ -308,6 +309,7 @@ Result<Opened> openFile(const SourceRequest& request) {
     info.deterministic = true;
     info.resolvedUri = formatUri(resolved);
     info.provider = "y4m";
+    info.fixed = FixedFields::all();
     if (const std::uint64_t rest = payload % stride; rest > 0) {
         info.warnings.push_back(std::format("{} trailing bytes ignored", rest));
     }
@@ -372,15 +374,10 @@ private:
 
 class Y4mProvider final : public ISourceProvider, public Managed<Y4mProvider> {
 public:
-    Y4mProvider(CreationKey<ComponentRegistry> key, const ParameterValues& /*values*/) noexcept
-        : Managed(std::move(key)) {}
+    explicit Y4mProvider(CreationKey<ComponentRegistry> key) noexcept : Managed(std::move(key)) {}
 
     static ComponentInfo info() noexcept {
-        return {.id = "y4m", .name = "YUV4MPEG2 file", .kind = Kind::Source, .version = 1};
-    }
-    static const ParameterSchema& schema() {
-        static const ParameterSchema SCHEMA;
-        return SCHEMA;
+        return {.id = "y4m", .name = "YUV4MPEG2 file", .version = 1};
     }
     static std::expected<void, Unavailable> probe(const Capabilities& /*caps*/) { return {}; }
 

@@ -1,9 +1,12 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <future>
+#include <latch>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -12,8 +15,8 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "converters.h"
@@ -25,6 +28,7 @@
 #include "dvv/base/when_all.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_store.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
@@ -41,6 +45,7 @@ using dvv::syncWait;
 using dvv::Task;
 using dvv::whenAll;
 using dvv::media::Api;
+namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
 using dvv::media::FormatId;
@@ -49,6 +54,8 @@ using dvv::media::FrameKey;
 using dvv::media::FrameStore;
 using dvv::media::HostPlanesB;
 using dvv::media::LayoutPolicy;
+using dvv::media::Lease;
+using dvv::media::LeaseInfo;
 using dvv::media::LeaseKind;
 using dvv::media::MemKind;
 using dvv::media::OriginId;
@@ -63,6 +70,7 @@ using dvv::media::test::FakeConverter;
 using dvv::media::test::FakeFrame;
 using dvv::media::test::FakeSource;
 using dvv::media::test::Gate;
+using dvv::media::test::OnExit;
 using dvv::media::test::pattern;
 using dvv::media::test::StoreTest;
 using dvv::media::test::waitFor;
@@ -70,9 +78,9 @@ using dvv::media::test::waitUntil;
 using dvv::test::TestAuthority;
 
 // The host planes of a lease (REQUIREs that the binding holds them).
-template <class Lease>
-const HostPlanesB& planesOf(const Lease& lease) {
-    const auto* planes = std::get_if<HostPlanesB>(&lease.binding());
+template <LeaseKind K>
+const HostPlanesB& planesOf(const Lease<K>& lease) {
+    const auto* planes = lease.planes();
     REQUIRE(planes != nullptr);
     return *planes;
 }
@@ -114,17 +122,19 @@ Task<Result<ReadLease>> acquireAndRecord(std::shared_ptr<FrameStore> store, Fram
     co_return lease;
 }
 
-std::unique_ptr<FakeConverter> makeUnpack() {
+std::unique_ptr<FakeConverter> makeUnpack(Gate* gate = nullptr, std::size_t output_bytes = 0) {
     return std::make_unique<FakeConverter>(FakeConverter::Config{
         .name = "Unpack",
         .from = dvv::media::detail::PRODUCED,
         .to = {.unpacked = true, .api = Api::HostPlanes, .kind = dvv::media::MemKind::Host},
-        .fidelity = dvv::media::Fidelity::Lossless});
+        .fidelity = dvv::media::Fidelity::Lossless,
+        .gate = gate,
+        .outputBytes = output_bytes});
 }
 
 constexpr StateKey P = dvv::media::detail::PRODUCED;
-constexpr StateKey X{.unpacked = false, .api = Api::VkBuffer, .kind = MemKind::Host};
-constexpr StateKey U{.unpacked = true, .api = Api::VkBuffer, .kind = MemKind::Host};
+constexpr StateKey X{.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::Host};
+constexpr StateKey U{.unpacked = true, .api = vulkan::BUFFER, .kind = MemKind::Host};
 
 std::unique_ptr<FakeConverter> makeConverter(std::string name, StateKey from, StateKey to,
                                              Fidelity fidelity, double cost,
@@ -174,9 +184,52 @@ ViewSpec viewOf(FormatId format, Api api, Domain domain) {
     return ViewSpec{format, 0, LayoutPolicy::Any, api, domain, 0};
 }
 
+// The bytes the fake source allocates for one frame (gray 16x8).
+constexpr std::size_t CAPACITY = 128;
+
+// The pending bytes of the host tier (no REQUIRE: openers call it on their own thread).
+std::size_t hostPending(const FrameStore& store) {
+    const auto stats = store.stats();
+    return stats.tiers.empty() ? 0 : stats.tiers[0].pending;
+}
+
+// Every tier's pending bytes are 0.
+bool settled(const FrameStore& store) {
+    const auto stats = store.stats();
+    return std::ranges::all_of(stats.tiers, [](const auto& tier) { return tier.pending == 0; });
+}
+
+// The host tier's detached reservations, read under the store's mutex.
+std::size_t hostDetachedReserved(FrameStore& store) {
+    const StoreState& s = StoreAccess::state(store);
+    const std::scoped_lock lock(s.mutex);
+    return s.tiers[0].detachedReserved;
+}
+
+// An acquire on its own thread, for cases that detach while it runs.
+std::future<Result<ReadLease>> acquireAsync(FrameStore& store, FrameKey key, const ViewSpec& view,
+                                            IExecutor& resume_on) {
+    return std::async(std::launch::async, [&store, key, view, &resume_on] {
+        return syncWait(store.acquire(key, view, resume_on));
+    });
+}
+
+// The acquire failed with Errc::Cancelled.
+bool isCancelled(const Result<ReadLease>& result) {
+    return !result.has_value() && result.error().code == Errc::Cancelled;
+}
+
 }  // namespace
 
 TEST_SUITE("store") {
+    TEST_CASE("lease template: the aliases are the template") {
+        static_assert(std::is_same_v<ReadLease, Lease<LeaseKind::Read>>);
+        static_assert(std::is_same_v<PinLease, Lease<LeaseKind::Pin>>);
+        static_assert(!std::is_copy_constructible_v<ReadLease> &&
+                      std::is_nothrow_move_constructible_v<PinLease>);
+        static_assert(ReadLease::KIND == LeaseKind::Read && PinLease::KIND == LeaseKind::Pin);
+    }
+
     TEST_CASE_FIXTURE(StoreTest, "acquire produces the original once and then hits") {
         const auto store = makeStore();
         const auto source = makeSource(4);
@@ -580,7 +633,7 @@ TEST_SUITE("store") {
                             failures.fetch_add(1);
                             continue;
                         }
-                        const auto* planes = std::get_if<HostPlanesB>(&lease->binding());
+                        const auto* planes = lease->planes();
                         if (planes == nullptr || !holdsPattern(planes->planes[0], i % 4)) {
                             wrong_bytes.fetch_add(1);
                         }
@@ -618,6 +671,171 @@ TEST_SUITE("store") {
         CHECK(dvv::LifetimeRegistry::instance().liveCount() == baseline);
     }
 
+    TEST_CASE_FIXTURE(StoreTest, "share is a counted lease with its own location") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        const auto line = std::source_location::current().line() + 1;
+        ReadLease shared = lease.share();
+        REQUIRE(shared);
+        CHECK(shared.key() == lease.key());
+        CHECK(shared.view() == lease.view());
+        CHECK(planesOf(shared).planes[0].data() == planesOf(lease).planes[0].data());
+        const std::vector<LeaseInfo> leases = store->outstandingLeases();
+        REQUIRE(leases.size() == 2);
+        CHECK(std::ranges::count_if(
+                  leases, [&](const LeaseInfo& info) { return info.where.line() == line; }) == 1);
+        CHECK(store->stats().leases == 2);
+        requireInvariants(*store);
+        CHECK(store->stats().frames == 1);
+
+        lease = ReadLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 1);
+        CHECK(store->stats().leases == 1);
+
+        shared = ReadLease{};
+        CHECK(store->outstandingLeases().empty());
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a pin share counts as a pin") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        PinLease pin = syncWait(store->pin({origin, 0}, hostView, *requester)).value();
+        PinLease shared = pin.share();
+        CHECK(shared);
+        const auto stats = store->stats();
+        CHECK(stats.pins == 2);
+        CHECK(stats.leases == 0);
+        const std::vector<LeaseInfo> leases = store->outstandingLeases();
+        CHECK(leases.size() == 2);
+        CHECK(std::ranges::all_of(
+            leases, [](const LeaseInfo& info) { return info.kind == LeaseKind::Pin; }));
+        requireInvariants(*store);
+
+        pin = PinLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 1);
+        shared = PinLease{};
+        CHECK(store->stats().pins == 0);
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "an empty lease shares to an empty lease") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const ReadLease held = take(*store, {origin, 0}, hostView, *requester);
+        const std::size_t before = store->outstandingLeases().size();
+        CHECK_FALSE(ReadLease{}.share());
+        CHECK_FALSE(PinLease{}.share());
+        CHECK(store->outstandingLeases().size() == before);
+        CHECK(store->stats().leases == 1);
+        CHECK(store->stats().pins == 0);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "planes() is the host binding or null") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        REQUIRE(lease.planes() != nullptr);
+        CHECK(lease.planes() == dvv::media::bindingIf<HostPlanesB>(lease.binding()));
+        CHECK(ReadLease{}.planes() == nullptr);
+        CHECK(PinLease{}.planes() == nullptr);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a share outlives detach") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        store->detach(origin);
+        CHECK(store->stats().frames == 0);
+        ReadLease shared = lease.share();
+        REQUIRE(shared);
+        CHECK(store->outstandingLeases().size() == 2);
+        CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+        lease = ReadLease{};
+        CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+        shared = ReadLease{};
+        CHECK(store->outstandingLeases().empty());
+        CHECK(store->stats().leases == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "share races with trim and release") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        constexpr int SHARERS = 2;
+        constexpr int ROUNDS = 1000;
+        std::atomic<int> failures{0};
+        std::atomic<int> done{0};
+        {
+            std::jthread trimmer([&] {
+                for (int round = 0; round < ROUNDS || done.load() < SHARERS; ++round) {
+                    store->trim(store->hostDomain(), 0);
+                }
+            });
+            std::vector<std::jthread> sharers;
+            sharers.reserve(SHARERS);
+            for (int sharer = 0; sharer < SHARERS; ++sharer) {
+                sharers.emplace_back([&] {
+                    ReadLease previous;
+                    for (int round = 0; round < ROUNDS; ++round) {
+                        ReadLease next = lease.share();
+                        const auto* planes = next.planes();
+                        if (!next || planes == nullptr || !holdsPattern(planes->planes[0], 0)) {
+                            failures.fetch_add(1);
+                        }
+                        previous = std::move(next);  // drops the share of the previous round
+                    }
+                    done.fetch_add(1);
+                });
+            }
+        }
+        CHECK(failures.load() == 0);
+        requireInvariants(*store);
+        CHECK(store->stats().leases == 1);
+        CHECK(store->outstandingLeases().size() == 1);
+
+        lease = ReadLease{};
+        store->trim(store->hostDomain(), 0);
+        CHECK(store->stats().frames == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a share keeps the store alive") {
+        const std::size_t baseline = dvv::LifetimeRegistry::instance().liveCount();
+        {
+            auto store = makeStore();
+            auto source = makeSource();
+            const OriginId origin = store->attach(source).value();
+            ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+            ReadLease shared = lease.share();
+            const std::weak_ptr<FrameStore> weak = store;
+            lease = ReadLease{};
+            store.reset();
+            CHECK_FALSE(weak.expired());
+            REQUIRE(shared);
+            CHECK(shared.desc() == desc);
+            CHECK(holdsPattern(planesOf(shared).planes[0], 0));
+            shared = ReadLease{};
+            CHECK(weak.expired());
+            source.reset();
+        }
+        CHECK(dvv::LifetimeRegistry::instance().liveCount() == baseline);
+    }
+
     TEST_CASE_FIXTURE(StoreTest, "a view no converter makes is Unsupported") {
         const auto store = makeStore();
         const auto source = makeSource();
@@ -628,6 +846,21 @@ TEST_SUITE("store") {
         CHECK(result.error().code == Errc::Unsupported);
         CHECK(contains(result.error().message, "no converter path"));
         CHECK(source->produced.load() == 0);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "the shared layout value prints as Opaque") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        ViewSpec opaque = hostView;
+        opaque.layout = LayoutPolicy::Opaque;
+        const Result<ReadLease> result = syncWait(store->acquire({origin, 0}, opaque, *requester));
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == Errc::Unsupported);
+        const std::string message = result.error().message;
+        CHECK(contains(message, "no converter path from"));
+        CHECK(contains(message, "Opaque"));
+        CHECK_FALSE(contains(message, "VkOptimal"));
     }
 
     TEST_CASE_FIXTURE(StoreTest, "Produce then one converter, single flight") {
@@ -814,7 +1047,7 @@ TEST_SUITE("store") {
         const auto store = makeStore(listOf(makeUnpack()));
         const auto source = makeSource();
         const OriginId origin = store->attach(source).value();
-        const ViewSpec buffer = viewOf(desc.format, Api::VkBuffer, Domain{});
+        const ViewSpec buffer = viewOf(desc.format, vulkan::BUFFER, Domain{});
         const Result<ReadLease> first = syncWait(store->acquire({origin, 0}, buffer, *requester));
         REQUIRE_FALSE(first.has_value());
         CHECK(first.error().code == Errc::Unsupported);
@@ -841,7 +1074,7 @@ TEST_SUITE("store") {
             store->attach(TestAuthority::makeShared<FakeSource>(FrameDesc{yuv_format, 0, 16, 8}, 4))
                 .value();
         const Result<ReadLease> other_format = syncWait(
-            store->acquire({third, 0}, viewOf(yuv_format, Api::VkBuffer, Domain{}), *requester));
+            store->acquire({third, 0}, viewOf(yuv_format, vulkan::BUFFER, Domain{}), *requester));
         REQUIRE_FALSE(other_format.has_value());
         CHECK(other_format.error().code == Errc::Unsupported);
         CHECK(StoreAccess::noPathCount(*store) == 2);
@@ -865,9 +1098,10 @@ TEST_SUITE("store") {
 
     TEST_CASE_FIXTURE(StoreTest, "a domain the store does not have is Unsupported") {
         // A converter into a memory kind the host-only store has no tier for is not registered.
-        const auto store = makeStore(listOf(makeConverter(
-            "ToStaging", P, {.unpacked = false, .api = Api::VkBuffer, .kind = MemKind::HostVisible},
-            Fidelity::Exact, 1)));
+        const auto store = makeStore(listOf(
+            makeConverter("ToStaging", P,
+                          {.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible},
+                          Fidelity::Exact, 1)));
         REQUIRE(store->stats().converters.size() == 1);
         CHECK(store->stats().converters[0].name == "Produce");
         const auto source = makeSource();
@@ -878,7 +1112,7 @@ TEST_SUITE("store") {
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == Errc::Unsupported);
         const Result<ReadLease> staging = syncWait(store->acquire(
-            {origin, 0}, viewOf(desc.format, Api::VkBuffer, Domain{MemKind::HostVisible}),
+            {origin, 0}, viewOf(desc.format, vulkan::BUFFER, Domain{MemKind::HostVisible}),
             *requester));
         REQUIRE_FALSE(staging.has_value());
         CHECK(staging.error().code == Errc::Unsupported);
@@ -890,19 +1124,19 @@ TEST_SUITE("store") {
     TEST_CASE_FIXTURE(StoreTest, "a multi-step plan publishes every step and accounts every tier") {
         const Domain staging{MemKind::HostVisible};
         const Domain device{MemKind::DeviceLocal};
-        const StateKey on_staging{.unpacked = false, .api = Api::VkBuffer, .kind = staging.kind};
-        const StateKey on_device{.unpacked = false, .api = Api::VkBuffer, .kind = device.kind};
-        const StateKey image{.unpacked = true, .api = Api::VkImage, .kind = device.kind};
+        const StateKey on_staging{.unpacked = false, .api = vulkan::BUFFER, .kind = staging.kind};
+        const StateKey on_device{.unpacked = false, .api = vulkan::BUFFER, .kind = device.kind};
+        const StateKey image{.unpacked = true, .api = vulkan::IMAGE, .kind = device.kind};
         const auto store =
             makeStore(listOf(makeConverter("ToStaging", P, on_staging, Fidelity::Exact, 1),
                              makeConverter("Upload", on_staging, on_device, Fidelity::Exact, 2),
                              makeConverter("GpuUnpack", on_device, image, Fidelity::Lossless, 0.5,
-                                           LayoutPolicy::VkOptimal)),
+                                           LayoutPolicy::Opaque)),
                       {.staging = staging, .device = device});
         const OriginId origin = store->attach(makeSource()).value();
         const FrameKey key{origin, 0};
         const Result<ReadLease> unpacked = syncWait(
-            store->acquire(key, viewOf(planesView.format, Api::VkImage, device), *requester));
+            store->acquire(key, viewOf(planesView.format, vulkan::IMAGE, device), *requester));
         REQUIRE(unpacked.has_value());
         CHECK(unpacked->fidelity() == Fidelity::Lossless);
         auto stats = store->stats();
@@ -914,10 +1148,10 @@ TEST_SUITE("store") {
 
         const std::uint64_t hits = stats.hits;
         const Result<ReadLease> uploaded =
-            syncWait(store->acquire(key, viewOf(desc.format, Api::VkBuffer, device), *requester));
+            syncWait(store->acquire(key, viewOf(desc.format, vulkan::BUFFER, device), *requester));
         CHECK(uploaded.has_value());
         const Result<ReadLease> staged =
-            syncWait(store->acquire(key, viewOf(desc.format, Api::VkBuffer, staging), *requester));
+            syncWait(store->acquire(key, viewOf(desc.format, vulkan::BUFFER, staging), *requester));
         CHECK(staged.has_value());
         stats = store->stats();
         CHECK(stats.hits == hits + 2);
@@ -928,20 +1162,20 @@ TEST_SUITE("store") {
     TEST_CASE_FIXTURE(StoreTest, "maxPlanDepth bounds the plan") {
         const Domain staging{MemKind::HostVisible};
         const Domain device{MemKind::DeviceLocal};
-        const StateKey on_staging{.unpacked = false, .api = Api::VkBuffer, .kind = staging.kind};
-        const StateKey on_device{.unpacked = false, .api = Api::VkBuffer, .kind = device.kind};
-        const StateKey image{.unpacked = true, .api = Api::VkImage, .kind = device.kind};
+        const StateKey on_staging{.unpacked = false, .api = vulkan::BUFFER, .kind = staging.kind};
+        const StateKey on_device{.unpacked = false, .api = vulkan::BUFFER, .kind = device.kind};
+        const StateKey image{.unpacked = true, .api = vulkan::IMAGE, .kind = device.kind};
         const auto store =
             makeStore(listOf(makeConverter("ToStaging", P, on_staging, Fidelity::Exact, 1),
                              makeConverter("Upload", on_staging, on_device, Fidelity::Exact, 2),
                              makeConverter("GpuUnpack", on_device, image, Fidelity::Lossless, 0.5,
-                                           LayoutPolicy::VkOptimal)),
+                                           LayoutPolicy::Opaque)),
                       {.staging = staging, .device = device},
                       [](dvv::media::FrameStoreOptions& options) { options.maxPlanDepth = 2; });
         const auto source = makeSource();
         const OriginId origin = store->attach(source).value();
         const Result<ReadLease> result = syncWait(store->acquire(
-            {origin, 0}, viewOf(planesView.format, Api::VkImage, device), *requester));
+            {origin, 0}, viewOf(planesView.format, vulkan::IMAGE, device), *requester));
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == Errc::Unsupported);
         CHECK(StoreAccess::noPathCount(*store) == 1);
@@ -950,8 +1184,8 @@ TEST_SUITE("store") {
     }
 
     TEST_CASE_FIXTURE(StoreTest, "an original-format request never returns Derived") {
-        const ViewSpec unpacked_buffer = viewOf(planesView.format, Api::VkBuffer, Domain{});
-        const ViewSpec buffer = viewOf(desc.format, Api::VkBuffer, Domain{});
+        const ViewSpec unpacked_buffer = viewOf(planesView.format, vulkan::BUFFER, Domain{});
+        const ViewSpec buffer = viewOf(desc.format, vulkan::BUFFER, Domain{});
         {
             const auto store =
                 makeStore(listOf(makeConverter("LossyCopy", P, X, Fidelity::Derived, 1),
@@ -988,7 +1222,7 @@ TEST_SUITE("store") {
         const auto views = StoreAccess::views(*store, {origin, 0});
         std::vector<Fidelity> x_views;
         for (const auto& [view, fidelity] : views) {
-            if (view.format == desc.format && view.api == Api::VkBuffer) {
+            if (view.format == desc.format && view.api == vulkan::BUFFER) {
                 x_views.push_back(fidelity);
             }
         }
@@ -1027,7 +1261,7 @@ TEST_SUITE("store") {
         static_cast<void>(take(*store, key, hostView, *requester));
         static_cast<void>(take(*store, key, planesView, *requester));
         static_cast<void>(
-            take(*store, key, viewOf(planesView.format, Api::VkBuffer, Domain{}), *requester));
+            take(*store, key, viewOf(planesView.format, vulkan::BUFFER, Domain{}), *requester));
         CHECK(store->stats().tiers[0].bytes == 384);
         const auto fidelities = [&] {
             std::vector<Fidelity> list;
@@ -1076,9 +1310,9 @@ TEST_SUITE("store") {
             options.hostBudget = 256;
         };
         {
-            // allocateHost of frame 1 sees 128 bytes and evicts nothing. The plan then publishes
-            // frame 1 and its unpacked view (384 bytes), so only the eviction after the plan
-            // brings the tier back to its budget.
+            // allocateHost of frame 1 sees 128 bytes plus its own 128 pending (the budget) and
+            // evicts nothing. The plan then publishes frame 1 and its unpacked view (384 bytes), so
+            // only the eviction after the plan brings the tier back to its budget.
             const auto store = makeStore(listOf(makeUnpack()), {}, budget);
             const OriginId origin = store->attach(makeSource()).value();
             static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
@@ -1227,5 +1461,566 @@ TEST_SUITE("store") {
         CHECK(store->stats().frames == 1);
         CHECK(store->stats().evictions == 0);
         requireInvariants(*store);
+    }
+
+    // ---- Pending bytes: a tier counts the frames being made ----
+
+    TEST_CASE_FIXTURE(StoreTest, "pending host bytes are counted while a produce runs") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        static_cast<void>(take(*store, {origin, 1}, hostView, *requester));  // one cached frame
+        const std::size_t before = store->stats().tiers[0].bytes;
+        Gate gate;
+        source->afterAllocate = &gate;
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            gate.open();
+        });
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == CAPACITY);
+        CHECK(bytes == before);
+        const auto after = store->stats().tiers[0];
+        CHECK(after.pending == 0);
+        CHECK(after.bytes == before + CAPACITY);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "pending bytes evict cached frames, never leased or pinned ones") {
+        const auto store = makeStore(
+            {}, {}, [](dvv::media::FrameStoreOptions& options) { options.hostBudget = 1024; });
+        const auto source = makeSource(10);
+        const OriginId origin = store->attach(source).value();
+        // Keys 0 and 1 are held from their first acquire, so they stay the least recently used:
+        // the eviction must step over them to reach the cached keys 2 and 3.
+        const ReadLease leased = take(*store, {origin, 0}, hostView, *requester);
+        Result<PinLease> pinned = syncWait(store->pin({origin, 1}, hostView, *requester));
+        REQUIRE(pinned.has_value());
+        for (std::int64_t index = 2; index < 6; ++index) {
+            static_cast<void>(take(*store, {origin, index}, hostView, *requester));
+        }
+        REQUIRE(store->stats().tiers[0].bytes == 6 * CAPACITY);
+
+        // K = 4 concurrent produces of fresh keys, each held after its allocation.
+        constexpr std::size_t PRODUCES = 4;
+        Gate gate;
+        source->afterAllocate = &gate;
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::uint64_t evictions = 0;
+        std::size_t outstanding = 0;
+        bool leases_valid = false;
+        bool held_indexed = false;
+        bool cached_evicted = false;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == PRODUCES; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            evictions = stats.evictions;
+            outstanding = store->outstandingLeases().size();
+            leases_valid = leased.desc() == desc && pinned && pinned->desc() == desc;
+            // A lease keeps its frame alive even out of the index: check the index itself.
+            held_indexed = !StoreAccess::views(*store, {origin, 0}).empty() &&
+                           !StoreAccess::views(*store, {origin, 1}).empty();
+            cached_evicted = StoreAccess::views(*store, {origin, 2}).empty() &&
+                             StoreAccess::views(*store, {origin, 3}).empty();
+            gate.open();
+        });
+        std::vector<Task<Result<ReadLease>>> tasks;
+        tasks.reserve(PRODUCES);
+        for (std::size_t i = 0; i < PRODUCES; ++i) {
+            tasks.push_back(
+                store->acquire({origin, static_cast<std::int64_t>(6 + i)}, hostView, *requester));
+        }
+        std::vector<Result<ReadLease>> results = syncWait(whenAll(std::move(tasks)));
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == PRODUCES * CAPACITY);
+        CHECK(evictions == 2);  // 896, 1024, then 1152 -> 1024 twice
+        CHECK(bytes + pending <= 1024);
+        CHECK(held_indexed);
+        CHECK(cached_evicted);
+        CHECK(leases_valid);
+        CHECK(outstanding == 2);
+        for (const Result<ReadLease>& result : results) {
+            CHECK(result.has_value());
+        }
+        results.clear();
+        requireInvariants(*store);
+        CHECK(settled(*store));
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a failed produce or converter step releases its reservation") {
+        {
+            const auto store = makeStore();
+            const auto source = makeSource();
+            source->failAfterAllocate = 1;
+            const OriginId origin = store->attach(source).value();
+            const Result<ReadLease> failed =
+                syncWait(store->acquire({origin, 0}, hostView, *requester));
+            REQUIRE_FALSE(failed.has_value());
+            CHECK(failed.error().message == "fake read error");
+            CHECK(settled(*store));
+            requireInvariants(*store);
+        }
+        auto unpack = makeUnpack(nullptr, 64);
+        unpack->failNext = 1;
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        const Result<ReadLease> failed =
+            syncWait(store->acquire({origin, 0}, planesView, *requester));
+        REQUIRE_FALSE(failed.has_value());
+        CHECK(failed.error().message == "fake convert error");
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "the OOM retry does not double the reservation") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();  // the allocator lives in the store: no cycle
+        std::atomic<int> calls{0};
+        std::optional<std::size_t> during;  // written by the retry, read after the acquire
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &during, raw](std::size_t bytes,
+                                   std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                if (calls.fetch_add(1) == 0) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                during = raw->stats().tiers[0].pending;
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const OriginId origin = store->attach(makeSource()).value();
+        const Result<ReadLease> lease = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(lease.has_value());
+        CHECK(calls.load() == 2);
+        CHECK(during.value_or(0) == CAPACITY);
+        CHECK(hostPending(*store) == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a failed allocation settles only its own bytes") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();  // the allocator lives in the store: no cycle
+        std::atomic<int> calls{0};
+        std::optional<std::size_t> during;  // written by the retry, read after the acquire
+        // Call 1 is the produce's first allocation; call 2, its second, fails once; call 3 is
+        // the retry, while the first allocation is still alive.
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &during, raw](std::size_t bytes,
+                                   std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                const int call = calls.fetch_add(1);
+                if (call == 1) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                if (call == 2) {
+                    during = raw->stats().tiers[0].pending;
+                }
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const auto source = makeSource();
+        source->extraAllocations = 1;
+        const OriginId origin = store->attach(source).value();
+        const Result<ReadLease> lease = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(lease.has_value());
+        CHECK(calls.load() == 3);
+        CHECK(during.value_or(0) == 2 * CAPACITY);  // the first allocation stays counted
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter OOM retry does not double the reservation") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        auto unpack = makeUnpack(&gate, OUTPUT);
+        unpack->failWith = Errc::OutOfMemory;
+        unpack->failNext = 1;
+        unpack->gateSkips = 1;  // the first run fails at once, the retry waits on the gate
+        const FakeConverter* const converter = unpack.get();
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            pending = hostPending(*store);
+            gate.open();
+        });
+        const Result<ReadLease> planes =
+            syncWait(store->acquire({origin, 0}, planesView, *requester));
+        opener.join();
+        CHECK(reached);
+        CHECK(planes.has_value());
+        CHECK(converter->runs.load() == 2);
+        CHECK(pending == OUTPUT);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter step holds its output reservation") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        const auto store = makeStore(listOf(makeUnpack(&gate, OUTPUT)));
+        const OriginId origin = store->attach(makeSource()).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::size_t bytes = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            const auto stats = store->stats();
+            pending = stats.tiers[0].pending;
+            bytes = stats.tiers[0].bytes;
+            gate.open();
+        });
+        const ReadLease planes = take(*store, {origin, 0}, planesView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == OUTPUT);
+        const auto after = store->stats().tiers[0];
+        CHECK(after.pending == 0);
+        CHECK(after.bytes == bytes + CAPACITY);  // the FakeFrame copies the 128-byte plane
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest,
+                      "every converter's outputBytes equals the published frame's bytes") {
+        const auto store = makeStore(dvv::media::detail::makeHostConverters());
+        const OriginId origin = store->attach(makeSource()).value();
+        const auto& converters = StoreAccess::state(*store).converters;  // fixed after create
+        REQUIRE_FALSE(converters.empty());
+        for (std::size_t index = 0; index < converters.size(); ++index) {
+            const Converter& converter = *converters[index];
+            SUBCASE(std::format("{} {}", index, converter.name()).c_str()) {
+                const StateKey to = converter.to();
+                REQUIRE(to.kind == MemKind::Host);
+                const ViewSpec want = viewOf(to.unpacked ? planesView.format : desc.format, to.api,
+                                             store->hostDomain());
+                const FrameKey key{origin, static_cast<std::int64_t>(index)};
+                const ReadLease lease = take(*store, key, want, *requester);
+                const std::optional<std::size_t> bytes =
+                    StoreAccess::bytesOf(*store, key, lease.view());
+                CHECK(bytes.has_value());
+                CHECK(bytes.value_or(0) == converter.outputBytes(desc));
+                CHECK(converter.outputBytes(desc) > 0);
+            }
+        }
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach while a produce runs") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        std::size_t before_detach = 0;
+        std::size_t after_detach = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            before_detach = hostPending(*store);
+            store->detach(origin);
+            after_detach = hostPending(*store);
+            gate.open();
+        });
+        // Only the counts are checked: the acquire's own result is not part of this case.
+        [[maybe_unused]] const auto acquired =
+            syncWait(store->acquire({origin, 0}, hostView, *requester));
+        opener.join();
+        CHECK(reached);
+        CHECK(before_detach == CAPACITY);
+        CHECK(after_detach == CAPACITY);  // the step's memory is alive until it returns
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest,
+                      "detach keeps a running step's reservation in the detached figure") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        Result<void> invariants = dvv::makeError(Errc::Internal, "not checked");
+        std::size_t pending = 0;
+        std::size_t detached = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            store->detach(origin);
+            invariants = StoreAccess::checkInvariants(*store);
+            pending = hostPending(*store);
+            detached = hostDetachedReserved(*store);
+            gate.open();
+        });
+        [[maybe_unused]] const auto acquired =
+            syncWait(store->acquire({origin, 0}, hostView, *requester));
+        opener.join();
+        CHECK(reached);
+        CHECK_MESSAGE(invariants.has_value(),
+                      (invariants ? std::string() : invariants.error().message));
+        CHECK(pending == CAPACITY);
+        CHECK(detached == CAPACITY);  // the entry left the index with its reservation
+        CHECK(settled(*store));
+        CHECK(hostDetachedReserved(*store) == 0);
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "two allocations in one produce are both counted") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->afterAllocate = &gate;
+        source->extraAllocations = 1;
+        const OriginId origin = store->attach(source).value();
+        bool reached = false;
+        std::size_t pending = 0;
+        std::jthread opener([&] {
+            reached = waitFor([&] { return gate.waiting() == 1; });
+            pending = hostPending(*store);
+            gate.open();
+        });
+        const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
+        opener.join();
+        CHECK(reached);
+        CHECK(pending == 2 * CAPACITY);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach cancels the origin's queued produce steps") {
+        auto made_pool = dvv::ExecutorFactory::makeThreadPool(1);
+        REQUIRE(made_pool.has_value());
+        const std::shared_ptr<dvv::ThreadPool> pool =
+            std::move(made_pool).value_or(std::shared_ptr<dvv::ThreadPool>{});
+        const auto counting = std::make_shared<dvv::media::test::CountingExecutor>(*pool);
+        const auto store = makeStore(
+            {}, {}, [&](dvv::media::FrameStoreOptions& options) { options.cpu = counting; });
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+
+        auto first = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });  // its produce passed the cpu hop
+        std::latch busy(1);
+        pool->post([&busy] { busy.wait(); });
+        const std::size_t posts = counting->posts();
+        auto second = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        const OnExit release([&] {
+            if (!busy.try_wait()) {
+                busy.count_down();
+            }
+            gate.open();
+        });
+        waitUntil([&] { return counting->posts() > posts; });  // queued behind the busy task
+        store->detach(origin);
+        busy.count_down();
+        gate.open();
+
+        CHECK(isCancelled(first.get()));
+        CHECK(isCancelled(second.get()));
+        CHECK(source->attempts.load() == 1);  // the queued step never called produce
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a running produce sees the stop") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });
+        CHECK_FALSE(source->sawStop.load());
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(source->sawStop.load());
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a converter plan of a detached origin is cancelled") {
+        constexpr std::size_t OUTPUT = 96;
+        auto unpack = makeUnpack(nullptr, OUTPUT);
+        const FakeConverter* const converter = unpack.get();
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(converter->runs.load() == 0);
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach of one origin does not cancel another") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        const OriginId one = store->attach(source).value();
+        const OriginId two = store->attach(source).value();
+        auto first = acquireAsync(*store, {one, 0}, hostView, *requester);
+        auto second = acquireAsync(*store, {two, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 2; });
+        store->detach(one);
+        gate.open();
+        CHECK(isCancelled(first.get()));
+        const Result<ReadLease> other = second.get();
+        CHECK(other.has_value());
+        if (other) {
+            CHECK(holdsPattern(planesOf(*other).planes[0], 0));
+        }
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a source's own Cancelled is a failure") {
+        const auto store = makeStore();
+        const auto source = makeSource();
+        const OriginId origin = store->attach(source).value();
+        const std::uint64_t failures = store->stats().failures;
+        source->failWith = Errc::Cancelled;
+        source->failNext = 1;
+        const Result<ReadLease> own = syncWait(store->acquire({origin, 0}, hostView, *requester));
+        CHECK(isCancelled(own));
+        CHECK(store->stats().failures == failures + 1);
+
+        source->failWith = Errc::Io;
+        source->failNext = 1;
+        Gate gate;
+        source->gate = &gate;
+        auto acquired = acquireAsync(*store, {origin, 1}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(store->stats().failures == failures + 1);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach during the host allocator's OOM retry") {
+        const auto store = makeStore();
+        std::atomic<int> calls{0};
+        std::latch reached(1);
+        std::latch release(1);
+        StoreAccess::setHostAllocator(
+            *store,
+            [&calls, &reached, &release](
+                std::size_t bytes, std::size_t alignment) -> Result<dvv::platform::AlignedBuffer> {
+                if (calls.fetch_add(1) == 0) {
+                    return dvv::makeError(Errc::OutOfMemory, "fake allocation failure");
+                }
+                reached.count_down();  // the retry, outside the mutex
+                release.wait();
+                return dvv::platform::allocateAligned(bytes, alignment);
+            });
+        const OriginId origin = store->attach(makeSource()).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        reached.wait();
+        store->detach(origin);
+        release.count_down();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(calls.load() == 2);
+        CHECK(store->stats().failures == failures);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach during a converter OOM retry") {
+        constexpr std::size_t OUTPUT = 96;
+        Gate gate;
+        auto unpack = makeUnpack(&gate, OUTPUT);
+        unpack->failWith = Errc::OutOfMemory;
+        unpack->failNext = 1;
+        unpack->gateSkips = 1;  // the first run fails at once, the retry waits on the gate
+        const auto store = makeStore(listOf(std::move(unpack)));
+        const OriginId origin = store->attach(makeSource()).value();
+        const std::uint64_t failures = store->stats().failures;
+        auto acquired = acquireAsync(*store, {origin, 0}, planesView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });  // only the retry awaits the gate
+        CHECK(hostPending(*store) == OUTPUT);            // reserved before run
+        store->detach(origin);
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(store->stats().failures == failures);
+        // The step ended cancelled: neither its failed first run nor the retry counts.
+        const auto stats = store->stats();
+        REQUIRE(stats.converters.size() == 2);
+        CHECK(stats.converters[1].name == "Unpack");
+        CHECK(stats.converters[1].runs == 0);
+        CHECK(stats.converters[1].nanoseconds == 0);
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "a stop callback may call the store") {
+        const auto store = makeStore();
+        FrameStore* const raw = store.get();
+        std::atomic<bool> called{false};
+        const auto source = makeSource();
+        Gate gate;
+        source->gate = &gate;
+        source->onStop = [raw, &called] {
+            static_cast<void>(raw->stats());
+            called = true;
+        };
+        const OriginId origin = store->attach(source).value();
+        auto acquired = acquireAsync(*store, {origin, 0}, hostView, *requester);
+        const OnExit open_gate([&gate] { gate.open(); });
+        waitUntil([&] { return gate.waiting() == 1; });  // the callback is registered
+        store->detach(origin);  // would deadlock if the stop were requested under the mutex
+        CHECK(called.load());
+        gate.open();
+        CHECK(isCancelled(acquired.get()));
+        CHECK(settled(*store));
+        requireInvariants(*store);
+    }
+
+    TEST_CASE_FIXTURE(StoreTest, "detach twice or of an unknown origin is harmless") {
+        const auto store = makeStore();
+        const OriginId origin = store->attach(makeSource()).value();
+        static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
+        store->detach(origin);
+        store->detach(origin);
+        store->detach(OriginId{999});
+        requireInvariants(*store);
+        const Result<ReadLease> refused =
+            syncWait(store->acquire({origin, 1}, hostView, *requester));
+        CHECK_FALSE(refused.has_value());
+        if (!refused) {
+            CHECK(refused.error().code == Errc::Internal);
+            CHECK(contains(refused.error().message, "is not attached"));
+        }
     }
 }

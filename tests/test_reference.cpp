@@ -28,7 +28,7 @@ media::FormatId idOf(std::string_view name) {
 }
 
 bool isV210(media::FormatId id) {
-    return media::descriptor(id).name == "v210";
+    return media::formatDesc(id).name == "v210";
 }
 
 // The frame sizes of the round trip; v210 needs even widths.
@@ -53,14 +53,14 @@ media::CodeValues noise(media::FormatId id, std::uint32_t width, std::uint32_t h
 
 std::vector<std::byte> packOk(const media::CodeValues& values) {
     auto bytes = media::pack(values);
-    REQUIRE_MESSAGE(bytes.has_value(), bytes.error().message);
+    REQUIRE_MESSAGE(bytes.has_value(), (bytes.has_value() ? std::string{} : bytes.error().message));
     return *bytes;
 }
 
 // Every value of every component at its maximum, 2^bits - 1.
 media::CodeValues maxValues(media::FormatId id, std::uint32_t width, std::uint32_t height) {
     media::CodeValues values{.format = id, .width = width, .height = height};
-    const media::PixelFormatDescriptor& d = media::descriptor(id);
+    const media::PixelFormatDesc& d = media::formatDesc(id);
     for (std::size_t c = 0; c < d.componentCount; ++c) {
         const auto [cw, ch] = media::componentSize(id, c, width, height);
         values.components[c].assign(std::size_t{cw} * ch,
@@ -139,7 +139,7 @@ TEST_CASE("round trip for every format") {
     for (const media::FormatId id : media::catalogue()) {
         for (const auto [width, height] : roundTripSizes(id)) {
             for (const std::uint64_t seed : {1U, 2U}) {
-                INFO(std::format("{} {}x{} seed {}", media::descriptor(id).name, width, height,
+                INFO(std::format("{} {}x{} seed {}", media::formatDesc(id).name, width, height,
                                  seed));
                 const media::CodeValues x = noise(id, width, height, seed);
                 const std::vector<std::byte> bytes = packOk(x);
@@ -154,11 +154,29 @@ TEST_CASE("round trip for every format") {
     }
 }
 
+TEST_CASE("pack into a span equals the vector form") {
+    for (const media::FormatId id : media::catalogue()) {
+        INFO(media::formatDesc(id).name);
+        const media::CodeValues x = noise(id, 6, 4, 3);
+        const auto frame = media::geometry(id, 6, 4);
+        REQUIRE(frame.has_value());
+        const std::vector<std::byte> expected = packOk(x);
+        std::vector<std::byte> out(frame->bytes, std::byte{0xA5});
+        const auto result = media::pack(x, out);
+        CHECK(result.has_value());
+        CHECK(out == expected);
+        std::vector<std::byte> shorter(frame->bytes - 1, std::byte{0xA5});
+        const auto short_result = media::pack(x, shorter);
+        REQUIRE_FALSE(short_result.has_value());
+        CHECK(short_result.error().code == dvv::Errc::Internal);
+    }
+}
+
 TEST_CASE("pack of unpack clears exactly the padding") {
     for (const media::FormatId id : media::catalogue()) {
         const std::uint32_t width = oddWidth(id);
         const std::uint32_t height = 17;
-        INFO(media::descriptor(id).name);
+        INFO(media::formatDesc(id).name);
         const auto frame = media::geometry(id, width, height);
         REQUIRE(frame.has_value());
         const std::vector<std::byte> bytes = randomBytes(frame->bytes, 7);
@@ -192,14 +210,15 @@ TEST_CASE("unpacked planes equal packing in the unpacked format") {
     for (const media::FormatId id : media::catalogue()) {
         const std::uint32_t width = oddWidth(id);
         const std::uint32_t height = 17;
-        INFO(media::descriptor(id).name);
+        INFO(media::formatDesc(id).name);
         const media::CodeValues x = noise(id, width, height, 1);
         const media::FormatId unpacked = media::unpackedFormat(id);
         const auto unpacked_frame = media::geometry(unpacked, width, height);
         REQUIRE(unpacked_frame.has_value());
         std::vector<std::byte> planes(unpacked_frame->bytes);
         const auto result = media::unpackToPlanes(id, width, height, packOk(x), planes);
-        REQUIRE_MESSAGE(result.has_value(), result.error().message);
+        REQUIRE_MESSAGE(result.has_value(),
+                        (result.has_value() ? std::string{} : result.error().message));
         CHECK(
             planes ==
             packOk(media::CodeValues{

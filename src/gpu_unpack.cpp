@@ -52,7 +52,7 @@ VkFormat unpackedImageFormat(const ComponentDesc& component) noexcept {
 
 Result<UnpackPush> unpackPush(FormatId format, std::uint32_t width, std::uint32_t height,
                               std::size_t component, std::uint64_t base) {
-    const PixelFormatDescriptor& d = descriptor(format);
+    const PixelFormatDesc& d = formatDesc(format);
     // The plane that holds the component's samples, and those samples sorted by index.
     std::optional<std::size_t> plane;
     std::array<SampleSlot, MAX_SLOTS> slots{};
@@ -117,7 +117,7 @@ Result<std::shared_ptr<gpu::ComputePipeline>> createUnpackPipeline(gpu::Executio
     constexpr VkFormatFeatureFlags2 NEEDED = VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
                                              VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
     for (const VkFormat format : {VK_FORMAT_R8_UINT, VK_FORMAT_R16_UINT}) {
-        if ((context.formatFeatures(format) & NEEDED) != NEEDED) {
+        if ((gpu::formatFeatures(context, format) & NEEDED) != NEEDED) {
             return makeError(Errc::Unsupported,
                              std::format("device {} cannot write {} storage images without a "
                                          "format (M2 R1)",
@@ -132,7 +132,7 @@ Result<std::shared_ptr<gpu::ComputePipeline>> createUnpackPipeline(gpu::Executio
                                      "UnpackPush is {}",
                                      push_size, sizeof(UnpackPush)));
     }
-    return context.createComputePipeline(shader, sizeof(UnpackPush), {.storageImages = 1});
+    return gpu::createComputePipeline(context, shader, sizeof(UnpackPush), {.storageImages = 1});
 }
 
 std::uint64_t unpackBufferBytes(std::uint64_t offset, std::uint64_t frame_bytes) noexcept {
@@ -143,7 +143,7 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
                           const gpu::GpuBuffer& buffer, std::uint64_t offset, const FrameDesc& desc,
                           std::span<gpu::GpuImage* const> images) {
     DVV_TRY(const FrameGeometry frame, geometry(desc.format, desc.width, desc.height));
-    const PixelFormatDescriptor& format = descriptor(desc.format);
+    const PixelFormatDesc& format = formatDesc(desc.format);
     const std::uint64_t base = buffer.deviceAddress() + offset;
     if (base % 4 != 0) {
         return makeError(Errc::Internal,
@@ -171,7 +171,7 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
         const gpu::GpuImage* image = images[c];
         const VkFormat image_format = unpackedImageFormat(format.components[c]);
         if (image == nullptr || image->width() != push.width || image->height() != push.height ||
-            image->format() != image_format) {
+            gpu::vulkanFormat(*image) != image_format) {
             return makeError(
                 Errc::Internal,
                 std::format("unpack: the image of component {} of {} must be {}x{} {}", c,
@@ -179,10 +179,11 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
         }
     }
     for (std::size_t c = 0; c < images.size(); ++c) {
-        recorder.dispatch(pipeline, std::as_bytes(std::span(&pushes[c], 1)),
-                          std::span<gpu::GpuImage* const>(&images[c], 1),
-                          (pushes[c].width + UNPACK_GROUP - 1) / UNPACK_GROUP,
-                          (pushes[c].height + UNPACK_GROUP - 1) / UNPACK_GROUP);
+        recorder.dispatch(
+            pipeline, std::as_bytes(std::span(&pushes[c], 1)),
+            std::span<gpu::GpuImage* const>(&images[c], 1),
+            gpu::GroupCount{.x = (pushes[c].width + UNPACK_GROUP - 1) / UNPACK_GROUP,
+                            .y = (pushes[c].height + UNPACK_GROUP - 1) / UNPACK_GROUP});
     }
     return {};
 }

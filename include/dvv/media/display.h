@@ -1,6 +1,6 @@
 #pragma once
 
-// The display view and its colour model (spec §6.3, §8; design M3 D3-D6, D5R §1-§2). ToDisplay
+// The display view and its colour model. ToDisplay
 // turns code values into linear-light RGB; the primaries are not converted (the screen's are
 // assumed). The CPU reference here and
 // shaders/to_display.slang use the same float32 formulas.
@@ -19,12 +19,14 @@ namespace dvv::media {
 // first use as "rgba16f@display" (model Rgb, components R16 G16 B16 A16, one plane of groups of one
 // pixel in 8 bytes, little-endian), so geometry() works. Never an original: acquireOriginal refuses
 // an origin of this format (Internal).
+// The GPU format of the display image (RGBA16F) is DISPLAY_IMAGE_FORMAT in display_vulkan.h; this
+// header stays free of Vulkan.
 [[nodiscard]] FormatId displayFormat();
 // True for the display format (compares the name; never interns).
 [[nodiscard]] bool isDisplay(FormatId format) noexcept;
 // {Rgb, Full, Linear, Bt709}.
 [[nodiscard]] ColourId displayColour();
-// {displayFormat(), displayColour(), LayoutPolicy::Any, Api::VkImage, device_domain, 0}.
+// {displayFormat(), displayColour(), LayoutPolicy::Any, vulkan::IMAGE, device_domain, 0}.
 [[nodiscard]] ViewSpec displayView(const Domain& device_domain);
 
 // Which fields resolveColour() filled in because the frame left them Unspecified.
@@ -43,7 +45,7 @@ struct ResolvedColour {
     std::optional<ColourPreset> standard;
     bool operator==(const ResolvedColour&) const = default;
 };
-// The colour of `desc` (D5R §1.3, M4-D5R-NSPIX2): missing fields (left Unspecified by the frame)
+// The colour of `desc`: missing fields (left Unspecified by the frame)
 // come from the standard the given fields point to (standardOf with `hint`), else BT.709. A
 // nonStandard hint gives no standard (BT.709 fills); a BT.601 hint picks the PAL or NTSC primaries.
 // Callers that show the values pass the default hint, as the renderer does. The matrix of an RGB

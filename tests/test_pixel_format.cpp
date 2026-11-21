@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -34,7 +35,7 @@ media::FormatId idOf(std::string_view name) {
     return id.value_or(media::FormatId{0});  // REQUIRE above stops the test case first
 }
 
-void checkRejects(const media::PixelFormatDescriptor& descriptor, std::string_view text) {
+void checkRejects(const media::PixelFormatDesc& descriptor, std::string_view text) {
     const auto result = media::validate(descriptor);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == dvv::Errc::Format);
@@ -112,13 +113,13 @@ TEST_CASE("the catalogue lists 37 formats in D3 order") {
     for (std::size_t i = 0; i < CATALOGUE_SIZE; ++i) {
         CAPTURE(i);
         CHECK(catalogue[i] == i);
-        CHECK(media::descriptor(catalogue[i]).name == NAMES[i]);
+        CHECK(media::formatDesc(catalogue[i]).name == NAMES[i]);
     }
 }
 
 TEST_CASE("every catalogue entry validates") {
     for (const media::FormatId id : media::catalogue()) {
-        const auto result = media::validate(media::descriptor(id));
+        const auto result = media::validate(media::formatDesc(id));
         CHECK_MESSAGE(result.has_value(), (result ? std::string() : result.error().message));
     }
     for (const auto& descriptor : media::detail::builtInFormats()) {
@@ -149,7 +150,7 @@ TEST_CASE("formatAlias maps FFmpeg's full-range names") {
 }
 
 TEST_CASE("representative descriptor fields") {
-    const auto& p010 = media::descriptor(idOf("p010le"));
+    const auto& p010 = media::formatDesc(idOf("p010le"));
     CHECK(p010.planeCount == 2);
     const media::PlaneDesc& chroma = p010.planes[1];
     CHECK(chroma.groupPixels == 2);
@@ -161,14 +162,14 @@ TEST_CASE("representative descriptor fields") {
     CHECK(chroma.slots[0] == media::SampleSlot{1, 0, 0, 6});
     CHECK(chroma.slots[1] == media::SampleSlot{2, 0, 1, 6});
 
-    const auto& v210 = media::descriptor(idOf("v210"));
+    const auto& v210 = media::formatDesc(idOf("v210"));
     CHECK(v210.widthMultiple == 2);
     CHECK(v210.planes[0].rowAlign == 128);
     CHECK(v210.planes[0].slotCount == 12);
     CHECK(v210.planes[0].slots[11] == media::SampleSlot{0, 5, 3, 20});
 
-    CHECK(media::descriptor(idOf("gbrp")).planes[0].slots[0].component == 1);
-    CHECK(media::descriptor(idOf("rgb48be")).planes[0].order == media::ByteOrder::Big);
+    CHECK(media::formatDesc(idOf("gbrp")).planes[0].slots[0].component == 1);
+    CHECK(media::formatDesc(idOf("rgb48be")).planes[0].order == media::ByteOrder::Big);
 }
 
 TEST_CASE("geometry matches hand-computed sizes") {
@@ -261,7 +262,7 @@ TEST_CASE("componentSize") {
 
 TEST_CASE("unpacked formats") {
     for (const media::FormatId format : media::catalogue()) {
-        const media::PixelFormatDescriptor& source = media::descriptor(format);
+        const media::PixelFormatDesc& source = media::formatDesc(format);
         CAPTURE(source.name);
         const media::FormatId unpacked = media::unpackedFormat(format);
         CHECK(unpacked != format);
@@ -270,7 +271,7 @@ TEST_CASE("unpacked formats") {
         CHECK(media::unpackedFormat(unpacked) == unpacked);
         CHECK(media::unpackedFormat(format) == unpacked);
 
-        const media::PixelFormatDescriptor& derived = media::descriptor(unpacked);
+        const media::PixelFormatDesc& derived = media::formatDesc(unpacked);
         CHECK(derived.name == source.name + "@planes");
         const auto valid = media::validate(derived);
         CHECK_MESSAGE(valid.has_value(), (valid ? std::string() : valid.error().message));
@@ -292,18 +293,27 @@ TEST_CASE("unpacked formats") {
     REQUIRE(from_v210.has_value());
     REQUIRE(from_yuv.has_value());
     CHECK(*from_v210 == *from_yuv);
-    CHECK(media::descriptor(media::unpackedFormat(idOf("gbrp"))).planes[0].slots[0].component == 0);
+    CHECK(media::formatDesc(media::unpackedFormat(idOf("gbrp"))).planes[0].slots[0].component == 0);
+}
+
+TEST_CASE("pixel format: the new names are the old ones") {
+    static_assert(std::is_same_v<media::PixelFormatDescriptor, media::PixelFormatDesc>);
+    const media::FormatId id = idOf("yuv420p");
+    CHECK(&media::descriptor(id) == &media::formatDesc(id));
+    constexpr media::FormatId MAX_ID = 0xFFFFFFFF;
+    CHECK(&media::descriptor(MAX_ID) == &media::formatDesc(MAX_ID));
+    CHECK(media::formatDesc(MAX_ID).name.empty());
 }
 
 TEST_CASE("unknown ids") {
-    CHECK(media::descriptor(UNKNOWN_ID).name.empty());
-    CHECK(media::descriptor(UNKNOWN_ID).planeCount == 0);
+    CHECK(media::formatDesc(UNKNOWN_ID).name.empty());
+    CHECK(media::formatDesc(UNKNOWN_ID).planeCount == 0);
     CHECK_FALSE(media::isUnpacked(UNKNOWN_ID));
     CHECK(media::unpackedFormat(UNKNOWN_ID) == UNKNOWN_ID);
 }
 
 TEST_CASE("validate rejects broken descriptors") {
-    const auto copy_of = [](std::string_view name) { return media::descriptor(idOf(name)); };
+    const auto copy_of = [](std::string_view name) { return media::formatDesc(idOf(name)); };
 
     SUBCASE("name") {
         for (const char* name : {"", "a b", "a@b", "gray@displays"}) {
@@ -420,7 +430,7 @@ TEST_CASE("validate rejects broken descriptors") {
         checkRejects(d, "samples of component 0 do not match the group");
     }
     SUBCASE("GPU sample limit") {
-        media::PixelFormatDescriptor d;
+        media::PixelFormatDesc d;
         d.name = "wide";
         d.model = media::ColourModel::Gray;
         d.componentCount = 1;

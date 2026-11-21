@@ -15,8 +15,10 @@
 #include "dvv/base/error.h"
 #include "dvv/gpu/command_recorder.h"
 #include "dvv/gpu/compute_pipeline.h"
+#include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/execution_context.h"
 #include "dvv/gpu/resources.h"
+#include "dvv/media/display_vulkan.h"
 #include "dvv/media/types.h"
 
 namespace dvv::media::detail {
@@ -43,7 +45,6 @@ static_assert(offsetof(ToDisplayPush, planeLayout) == 48 && offsetof(ToDisplayPu
 
 inline constexpr std::uint32_t TO_DISPLAY_GROUP = 8;     // [numthreads(8, 8, 1)]
 inline constexpr std::uint32_t TO_DISPLAY_BINDINGS = 5;  // planes 0..3, output 4
-inline constexpr VkFormat DISPLAY_IMAGE_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 // For a frame of `format` (original or unpacked: the components are the same) and a resolved
 // colour. Errc::Internal for an unknown format or an empty frame.

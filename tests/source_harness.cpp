@@ -40,18 +40,20 @@ std::vector<FileReadCase> fileReadCases() {
 
 SourceHarness::SourceHarness() {
     auto cpu = dvv::ExecutorFactory::makeThreadPool(2);
-    REQUIRE_MESSAGE(cpu.has_value(), cpu.error().describe());
+    REQUIRE_MESSAGE(cpu.has_value(), (cpu.has_value() ? std::string{} : cpu.error().describe()));
     cpu_ = std::move(*cpu);
     auto io = dvv::ExecutorFactory::makeThreadPool(2);
-    REQUIRE_MESSAGE(io.has_value(), io.error().describe());
+    REQUIRE_MESSAGE(io.has_value(), (io.has_value() ? std::string{} : io.error().describe()));
     io_ = std::move(*io);
     registry_ = dvv::ComponentRegistry::create(dvv::Capabilities{});
     REQUIRE(registry_ != nullptr);
     auto factory = media::SourceFactory::create(*registry_, io_);
-    REQUIRE_MESSAGE(factory.has_value(), factory.error().describe());
+    REQUIRE_MESSAGE(factory.has_value(),
+                    (factory.has_value() ? std::string{} : factory.error().describe()));
     factory_ = std::move(*factory);
     auto store = media::FrameStore::create({.cpu = cpu_, .io = io_});
-    REQUIRE_MESSAGE(store.has_value(), store.error().describe());
+    REQUIRE_MESSAGE(store.has_value(),
+                    (store.has_value() ? std::string{} : store.error().describe()));
     store_ = std::move(*store);
 }
 
@@ -60,7 +62,8 @@ std::shared_ptr<media::ISource> SourceHarness::open(std::string_view uri,
                                                     std::optional<media::FormatHint> hint) {
     INFO(std::string(uri));
     auto opened = tryOpen(uri, file_reads, hint);
-    REQUIRE_MESSAGE(opened.has_value(), opened.error().describe());
+    REQUIRE_MESSAGE(opened.has_value(),
+                    (opened.has_value() ? std::string{} : opened.error().describe()));
     auto* source = std::get_if<std::unique_ptr<media::ISource>>(&*opened);
     REQUIRE_MESSAGE(source != nullptr, "the open was ambiguous");
     REQUIRE(*source != nullptr);
@@ -81,10 +84,14 @@ dvv::Result<std::vector<std::byte>> SourceHarness::originalBytes(
     DVV_TRY(const media::OriginId origin, store_->attach(source));
     dvv::Result<std::vector<std::byte>> bytes;
     {
-        auto read = dvv::syncWait(store_->acquireOriginal({origin, index}, media::Api::HostPlanes,
-                                                          store_->hostDomain(), *cpu_, true));
+        auto read =
+            dvv::syncWait(store_->acquireOriginal({origin, index},
+                                                  {.api = media::Api::HostPlanes,
+                                                   .domain = store_->hostDomain(),
+                                                   .fidelity = media::OriginalFidelity::Exact},
+                                                  *cpu_));
         if (read) {
-            const auto* planes = std::get_if<media::HostPlanesB>(&read->lease().binding());
+            const auto* planes = read->lease().planes();
             REQUIRE(planes != nullptr);
             std::vector<std::byte> copy;
             for (std::size_t p = 0; p < planes->planeCount; ++p) {

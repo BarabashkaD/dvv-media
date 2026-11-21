@@ -1,6 +1,6 @@
 #pragma once
 
-// The frame store (M2 design §5.1, §5.2): one index of frames per key, single-flight creation,
+// The frame store: one index of frames per key, single-flight creation,
 // read and pin leases, adoption, trimming and statistics.
 
 #include <cstddef>
@@ -17,13 +17,10 @@
 #include "dvv/base/executor.h"
 #include "dvv/base/lifetime.h"
 #include "dvv/base/task.h"
+#include "dvv/gpu/gpu_fwd.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
-
-namespace dvv::gpu {
-class ExecutionContext;
-}  // namespace dvv::gpu
 
 namespace dvv::media {
 
@@ -40,7 +37,7 @@ struct Plan;
 struct Prepared;
 struct Record;
 class Converter;
-// What ReadLease and PinLease hold (§5.2: the store and the entry).
+// What a Lease holds: the store and the entry.
 struct LeaseCore {
     std::shared_ptr<FrameStore> store;
     std::shared_ptr<Entry> entry;
@@ -51,15 +48,18 @@ struct LeaseCore {
 };
 }  // namespace detail
 
-// Move-only handle; keeps the view alive.
-class ReadLease {
+// A move-only handle that keeps one view of one store entry alive. Read leases count as readers,
+// pin leases as pins; the destructor releases under the store mutex (binding, entry, store last).
+template <LeaseKind K>
+class Lease {
 public:
-    ReadLease() = default;
-    ReadLease(ReadLease&& other) noexcept;
-    ReadLease& operator=(ReadLease&& other) noexcept;
-    ReadLease(const ReadLease&) = delete;
-    ReadLease& operator=(const ReadLease&) = delete;
-    ~ReadLease();  // under the store mutex: readers-- and LRU touch (§5.2)
+    static constexpr LeaseKind KIND = K;
+    Lease() = default;
+    Lease(Lease&& other) noexcept;
+    Lease& operator=(Lease&& other) noexcept;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+    ~Lease();
     [[nodiscard]] explicit operator bool() const noexcept { return core_.entry != nullptr; }
     // Valid leases only:
     [[nodiscard]] const FrameKey& key() const noexcept;
@@ -67,41 +67,32 @@ public:
     [[nodiscard]] const ViewSpec& view() const noexcept { return core_.view; }
     [[nodiscard]] Fidelity fidelity() const noexcept;
     [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
-    [[nodiscard]] SyncPoint ready() const noexcept;  // M2: always reached (D10)
+    // When the content is ready: the sync point given to adopt, or {} (always reached) for a frame
+    // the store made.
+    [[nodiscard]] SyncPoint ready() const noexcept;
+
+    // Valid and empty leases:
+    // The host planes of a HostPlanes binding; null for an empty lease or another binding. Valid
+    // while this lease (or a share of it) lives.
+    [[nodiscard]] const HostPlanesB* planes() const noexcept;
+    // A second lease on the same entry and view, counted like any lease (one more reader for Read,
+    // one more pin for Pin) and listed in outstandingLeases() with `where`. Takes the store mutex.
+    // An empty lease gives an empty lease (no lock). Valid also after the origin was detached: the
+    // entry lives while any lease holds it.
+    [[nodiscard]] Lease share(std::source_location where = std::source_location::current()) const;
 
 private:
     friend class FrameStore;
-    explicit ReadLease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
+    explicit Lease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
     void reset() noexcept;
     detail::LeaseCore core_;
 };
+using ReadLease = Lease<LeaseKind::Read>;
+using PinLease = Lease<LeaseKind::Pin>;
+extern template class Lease<LeaseKind::Read>;
+extern template class Lease<LeaseKind::Pin>;
 
-// The same shape and accessors as ReadLease; counts as a pin, not a reader.
-class PinLease {
-public:
-    PinLease() = default;
-    PinLease(PinLease&& other) noexcept;
-    PinLease& operator=(PinLease&& other) noexcept;
-    PinLease(const PinLease&) = delete;
-    PinLease& operator=(const PinLease&) = delete;
-    ~PinLease();  // under the store mutex: pins-- and LRU touch (§5.2)
-    [[nodiscard]] explicit operator bool() const noexcept { return core_.entry != nullptr; }
-    // Valid leases only:
-    [[nodiscard]] const FrameKey& key() const noexcept;
-    [[nodiscard]] const FrameDesc& desc() const noexcept;
-    [[nodiscard]] const ViewSpec& view() const noexcept { return core_.view; }
-    [[nodiscard]] Fidelity fidelity() const noexcept;
-    [[nodiscard]] const Binding& binding() const noexcept { return core_.binding; }
-    [[nodiscard]] SyncPoint ready() const noexcept;  // M2: always reached (D10)
-
-private:
-    friend class FrameStore;
-    explicit PinLease(detail::LeaseCore core) noexcept : core_(std::move(core)) {}
-    void reset() noexcept;
-    detail::LeaseCore core_;
-};
-
-// A read of a key's original (§6.6): only FrameStore::acquireOriginal makes one.
+// A read of a key's original: only FrameStore::acquireOriginal makes one.
 class OriginalRead {
 public:
     [[nodiscard]] const ReadLease& lease() const noexcept { return lease_; }  // Exact or Lossless
@@ -115,6 +106,7 @@ private:
 struct TierStats {
     Domain domain;
     std::size_t bytes = 0, budget = 0, views = 0;
+    std::size_t pending = 0;  // allocated for frames being made, not yet published
 };
 struct ConverterStats {
     std::string name;
@@ -148,6 +140,14 @@ struct FrameStoreOptions {
     std::size_t maxPlanDepth = 6;
 };
 
+// Lossless: the unpacked planes of the original; Exact: the original format.
+enum class OriginalFidelity : std::uint8_t { Lossless, Exact };
+struct OriginalRequest {
+    BindingKind api = BindingKind::HostPlanes;
+    Domain domain{};
+    OriginalFidelity fidelity = OriginalFidelity::Lossless;
+};
+
 class FrameStore final : public Managed<FrameStore>,
                          public std::enable_shared_from_this<FrameStore> {
 public:
@@ -162,6 +162,10 @@ public:
     [[nodiscard]] std::optional<Domain> deviceDomain() const noexcept;   // {DeviceLocal, d, gen}
 
     [[nodiscard]] Result<OriginId> attach(std::shared_ptr<ISource> source);
+    // Drops the origin's frames from the index (leased ones live on with their leases) and
+    // cancels its queued and running produce and conversion steps: their acquires end with
+    // Errc::Cancelled. An origin that was never attached (or is already detached) has no steps,
+    // but the frames adopted under it are dropped too; with none, detach does nothing.
     void detach(OriginId origin);
 
     // `key` and `want` are taken by value: the tasks are lazy, and a reference to a temporary
@@ -172,10 +176,13 @@ public:
     [[nodiscard]] Task<Result<PinLease>> pin(
         FrameKey key, ViewSpec view, IExecutor& resume_on,
         std::source_location where = std::source_location::current());
-    // The key's original in `api` and `domain`, colour forced to the frame's own: with
-    // require_exact the original format (Exact), otherwise the unpacked format (Lossless). Plans
-    // nothing itself: an acquire of originalView() or planesView(). Errc::Internal for a detached
-    // or unknown origin.
+    // The key's original as `request` asks, colour forced to the frame's own. Plans nothing
+    // itself: an acquire of originalView() (Exact) or planesView() (Lossless). Errc::Internal for
+    // a detached or unknown origin. `request` is taken by value: the task is lazy.
+    [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
+        FrameKey key, OriginalRequest request, IExecutor& resume_on,
+        std::source_location where = std::source_location::current());
+    // Deprecated (removed in 1.0.0): acquireOriginal(key, {api, domain, fidelity}, resume_on).
     [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
         FrameKey key, Api api, Domain domain, IExecutor& resume_on, bool require_exact = false,
         std::source_location where = std::source_location::current());
@@ -184,11 +191,12 @@ public:
         std::source_location where = std::source_location::current());
     [[nodiscard]] StoreStats stats() const;
     [[nodiscard]] std::vector<LeaseInfo> outstandingLeases() const;
+    // Evicts unleased, unpinned entries until bytes + pending <= target_bytes.
     void trim(Domain domain, std::size_t target_bytes);
 
 private:
-    friend class ReadLease;
-    friend class PinLease;
+    template <LeaseKind>
+    friend class Lease;
     friend class ProduceContext;
     friend struct detail::StoreAccess;
 
@@ -209,6 +217,8 @@ private:
                                                   const ViewSpec& want);
     [[nodiscard]] detail::LeaseCore finishLease(std::shared_ptr<detail::Entry> entry, ViewSpec view,
                                                 LeaseKind kind, std::source_location where);
+    [[nodiscard]] detail::LeaseCore shareLease(const detail::LeaseCore& core,
+                                               std::source_location where);
     // An exception in the completion path terminates: it would strand the waiters and poison the
     // key.
     [[nodiscard]] Task<Result<void>> runPlan(detail::Plan plan) noexcept;
@@ -217,9 +227,10 @@ private:
         ViewSpec input_view);
     [[nodiscard]] Result<void> publishLocked(detail::Entry& entry, std::shared_ptr<IFrame>& frame,
                                              std::vector<detail::Waiter*>& woken);
+    // `cancelled`: the plan's origin was detached; the steps do not count in failures.
     void failStepsLocked(detail::Plan& plan, std::size_t from, const Error& error,
-                         std::vector<detail::Waiter*>& woken);
-    void failSteps(detail::Plan& plan, std::size_t from, const Error& error);
+                         std::vector<detail::Waiter*>& woken, bool cancelled);
+    void failSteps(detail::Plan& plan, std::size_t from, const Error& error, bool cancelled);
     static void wake(std::span<detail::Waiter* const> waiters) noexcept;
     void releaseReaderLocked(detail::Entry& entry) noexcept;
     void touchLocked(detail::Entry& entry) noexcept;
@@ -227,6 +238,11 @@ private:
         detail::Entry& entry) noexcept;
     void evictLocked(std::size_t tier_index, std::size_t target,
                      std::vector<std::shared_ptr<detail::Entry>>& dropped);
+    // A frame being made counts in its tier from allocation to publish (TierStats::pending).
+    void reserveLocked(detail::Entry& output, std::size_t bytes) noexcept;  // tier.pending += bytes
+    void settleLocked(detail::Entry& output) noexcept;  // tier.pending -= reserved; reserved = 0
+    // Settles `bytes` of the entry's reservation: an allocation that failed.
+    void settleLocked(detail::Entry& output, std::size_t bytes) noexcept;
     void releaseLease(detail::LeaseCore& core) noexcept;
     [[nodiscard]] std::size_t slotOf(const detail::Converter& converter) const noexcept;
     [[nodiscard]] std::optional<std::size_t> tierOf(const Domain& domain) const noexcept;
