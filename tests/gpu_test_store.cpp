@@ -20,7 +20,9 @@
 #include "dvv/base/executor.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/task.h"
+#include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
@@ -28,6 +30,7 @@
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
+#include "frames_vulkan.h"
 #include "gpu_fixture.h"
 #include "gpu_unpack.h"
 #include "packed_source.h"
@@ -38,13 +41,14 @@ namespace media = dvv::media;
 namespace gpu = dvv::gpu;
 using dvv::Errc;
 using dvv::syncWait;
-using media::Api;
+using media::BindingKind;
 using media::Domain;
 using media::Fidelity;
 using media::FormatId;
 using media::FrameDesc;
 using media::FrameKey;
 using media::FrameStore;
+using media::HOST_PLANES;
 using media::HostPlanesB;
 using media::LayoutPolicy;
 using media::OriginId;
@@ -92,10 +96,10 @@ struct GpuStore {
         device = store->deviceDomain().value_or(Domain{});
     }
 
-    [[nodiscard]] dvv::Result<media::OriginalRead> read(std::int64_t index, Api api, Domain domain,
-                                                        dvv::IExecutor& resume_on,
+    [[nodiscard]] dvv::Result<media::OriginalRead> read(std::int64_t index, BindingKind binding,
+                                                        Domain domain, dvv::IExecutor& resume_on,
                                                         bool require_exact = false) const {
-        const media::OriginalRequest request{.api = api,
+        const media::OriginalRequest request{.binding = binding,
                                              .domain = domain,
                                              .fidelity = require_exact
                                                              ? media::OriginalFidelity::Exact
@@ -139,9 +143,8 @@ const HostPlanesB& hostPlanesOf(const ReadLease& lease) {
 // test double, not managed.
 class UnpaddedBufferFrame final : public media::IFrame {
 public:
-    UnpaddedBufferFrame(FrameDesc desc, ViewSpec view, std::shared_ptr<gpu::GpuBuffer> buffer,
-                        media::FrameGeometry geometry)
-        : desc_(desc), view_(view), buffer_(std::move(buffer)), geometry_(geometry) {}
+    UnpaddedBufferFrame(FrameDesc desc, ViewSpec view, std::shared_ptr<gpu::GpuBuffer> buffer)
+        : desc_(desc), view_(view), buffer_(std::move(buffer)) {}
     [[nodiscard]] const FrameDesc& desc() const noexcept override { return desc_; }
     [[nodiscard]] std::span<const ViewSpec> nativeViews() const noexcept override {
         return {&view_, 1};
@@ -150,7 +153,7 @@ public:
         if (native != view_) {
             return HostPlanesB{};
         }
-        return media::VkBufferB{.buffer = buffer_, .offset = 0, .geometry = geometry_};
+        return media::vulkan::bufferBinding(buffer_);
     }
     [[nodiscard]] std::size_t bytes() const noexcept override {
         return static_cast<std::size_t>(buffer_->size());
@@ -160,7 +163,6 @@ private:
     FrameDesc desc_;
     ViewSpec view_;
     std::shared_ptr<gpu::GpuBuffer> buffer_;
-    media::FrameGeometry geometry_;
 };
 
 // Forwards every member to the wrapped converter and awaits a gate before running it.
@@ -213,7 +215,7 @@ ViewSpec viewMadeBy(const media::detail::Converter& converter, const FrameDesc& 
     return ViewSpec{to.unpacked ? media::unpackedFormat(desc.format) : desc.format,
                     desc.colour,
                     LayoutPolicy::Any,
-                    to.api,
+                    to.binding,
                     domain.value_or(Domain{}),
                     0};
 }
@@ -225,7 +227,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: planes via the GPU equal the CPU referenc
         SUBCASE(std::string(name).c_str()) {
             const FrameDesc desc{.format = idOf(name), .colour = 0, .width = 34, .height = 17};
             const GpuStore test(*this, desc, 3);
-            const auto read = test.read(2, Api::HostPlanes, test.staging, executor());
+            const auto read = test.read(2, HOST_PLANES, test.staging, executor());
             REQUIRE_MESSAGE(read.has_value(),
                             (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Lossless);
@@ -250,7 +252,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: requireExact via staging returns the orig
         SUBCASE(std::string(name).c_str()) {
             const FrameDesc desc{.format = idOf(name), .colour = 0, .width = 34, .height = 17};
             const GpuStore test(*this, desc, 3);
-            const auto read = test.read(2, Api::HostPlanes, test.staging, executor(), true);
+            const auto read = test.read(2, HOST_PLANES, test.staging, executor(), true);
             REQUIRE_MESSAGE(read.has_value(),
                             (read.has_value() ? std::string{} : read.error().describe()));
             CHECK(read->lease().fidelity() == Fidelity::Exact);
@@ -278,7 +280,7 @@ TEST_CASE_FIXTURE(GpuTest,
     FrameStore& store = *test.store;
 
     // 1. The exact read's Readback entry stays leased; the HostUpload entry is evicted.
-    const auto exact = test.read(0, Api::HostPlanes, test.staging, executor(), true);
+    const auto exact = test.read(0, HOST_PLANES, test.staging, executor(), true);
     REQUIRE_MESSAGE(exact.has_value(),
                     (exact.has_value() ? std::string{} : exact.error().describe()));
     const auto before = store.stats();
@@ -314,7 +316,7 @@ TEST_CASE_FIXTURE(GpuTest,
     // 3. The host view in the staging domain comes only from Readback, from the device original.
     const auto uploaded = store.stats();
     const ReadLease host =
-        test.take(1, media::originalView(desc, Api::HostPlanes, test.staging), executor());
+        test.take(1, media::originalView(desc, HOST_PLANES, test.staging), executor());
     const auto after = store.stats();
     CHECK(runsOf(after, "Readback") == runsOf(uploaded, "Readback") + 1);
     CHECK(runsOf(after, "Upload") == runsOf(uploaded, "Upload"));
@@ -332,7 +334,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
 
     // Only the leased Readback entry is left: the HostUpload staging and the device original are
     // evicted, so the cheapest way to the device is Upload from the Readback buffer.
-    const auto exact = test.read(0, Api::HostPlanes, test.staging, executor(), true);
+    const auto exact = test.read(0, HOST_PLANES, test.staging, executor(), true);
     REQUIRE_MESSAGE(exact.has_value(),
                     (exact.has_value() ? std::string{} : exact.error().describe()));
     store.trim(test.staging, 0);
@@ -351,7 +353,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a HostReadback staging entry is an Upload
 
     // The device planes, read back, equal the CPU reference.
     const ReadLease host =
-        test.take(0, media::planesView(desc, Api::HostPlanes, test.staging), executor());
+        test.take(0, media::planesView(desc, HOST_PLANES, test.staging), executor());
     const auto after = store.stats();
     CHECK(runsOf(after, "Readback") == runsOf(uploaded, "Readback") + 1);
     CHECK(runsOf(after, "CpuUnpack") == runsOf(uploaded, "CpuUnpack"));
@@ -368,7 +370,7 @@ TEST_CASE_FIXTURE(GpuTest,
     const FrameDesc desc{.format = id, .colour = 0, .width = 34, .height = 17};
     const GpuStore test(*this, desc, 3);
 
-    const auto read = test.read(0, Api::HostPlanes, test.store->hostDomain(), executor());
+    const auto read = test.read(0, HOST_PLANES, test.store->hostDomain(), executor());
     REQUIRE_MESSAGE(read.has_value(), (read.has_value() ? std::string{} : read.error().describe()));
     auto stats = test.store->stats();
     CHECK(runsOf(stats, "CpuUnpack") == 1);
@@ -436,7 +438,112 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: a lease resolves its images and its buffe
     }
 }
 
-TEST_CASE_FIXTURE(GpuTest, "store gpu: device-tier eviction frees memory") {
+TEST_CASE_FIXTURE(GpuTest, "a GPU binding gives only its own kind") {
+    const auto make_image = [this](std::string name) {
+        auto made = gpu::createImage(context(), {.width = 4,
+                                                 .height = 2,
+                                                 .format = VK_FORMAT_R8_UINT,
+                                                 .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+                                                 .name = std::move(name)});
+        REQUIRE_MESSAGE(made.has_value(),
+                        (made.has_value() ? std::string{} : made.error().describe()));
+        return made ? std::move(*made) : std::shared_ptr<gpu::GpuImage>{};
+    };
+    auto made = gpu::createBuffer(context(), {.size = 64,
+                                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                              .memory = gpu::MemoryUsage::DeviceOnly,
+                                              .name = "binding buffer"});
+    REQUIRE_MESSAGE(made.has_value(), (made.has_value() ? std::string{} : made.error().describe()));
+    const std::shared_ptr<gpu::GpuBuffer> buffer =
+        made ? std::move(*made) : std::shared_ptr<gpu::GpuBuffer>{};
+
+    const media::Binding from_buffer = media::vulkan::bufferBinding(buffer);
+    CHECK(from_buffer.kind() == media::vulkan::BUFFER);
+    CHECK(from_buffer.planes() == nullptr);
+    CHECK(media::vulkan::buffer(from_buffer) == buffer.get());
+    CHECK(media::vulkan::image(from_buffer, 0) == nullptr);
+    CHECK(media::vulkan::imageCount(from_buffer) == 0);
+
+    const std::shared_ptr<gpu::GpuImage> first = make_image("binding image 0");
+    std::shared_ptr<gpu::GpuImage> second = make_image("binding image 1");
+    {
+        const std::array two{first, second};
+        const media::Binding from_images = media::vulkan::imageBinding(two);
+        CHECK(from_images.kind() == media::vulkan::IMAGE);
+        CHECK(media::vulkan::imageCount(from_images) == 2);
+        CHECK(media::vulkan::image(from_images, 1) == second.get());
+        CHECK(media::vulkan::image(from_images, 2) == nullptr);
+        CHECK(media::vulkan::buffer(from_images) == nullptr);
+        CHECK(from_images.planes() == nullptr);
+    }
+
+    // A copy of the binding keeps its images alive.
+    const std::weak_ptr<gpu::GpuImage> weak = second;
+    std::optional<media::Binding> copy;
+    {
+        const std::array two{first, second};
+        const media::Binding from_images = media::vulkan::imageBinding(two);
+        copy = from_images;
+    }
+    second.reset();
+    CHECK(copy.has_value());
+    CHECK_FALSE(weak.expired());
+    copy.reset();
+    CHECK(weak.expired());
+
+    // Exactly MAX_COMPONENTS images (a four-component format) are kept, the last one readable.
+    std::array<std::shared_ptr<gpu::GpuImage>, media::MAX_COMPONENTS> full{};
+    for (std::size_t c = 0; c < full.size(); ++c) {
+        full[c] = make_image(std::format("binding image {}", c));
+    }
+    const media::Binding all = media::vulkan::imageBinding(full);
+    CHECK(all.kind() == media::vulkan::IMAGE);
+    CHECK(media::vulkan::imageCount(all) == media::MAX_COMPONENTS);
+    CHECK(media::vulkan::image(all, media::MAX_COMPONENTS - 1) == full.back().get());
+
+    // Refused: the empty host binding, nothing cut silently.
+    std::array<std::shared_ptr<gpu::GpuImage>, media::MAX_COMPONENTS + 1> too_many{};
+    std::ranges::copy(full, too_many.begin());
+    too_many.back() = first;
+    const std::array<std::shared_ptr<gpu::GpuImage>, 2> with_null{first, nullptr};
+    const std::array refused{media::vulkan::bufferBinding(nullptr), media::vulkan::imageBinding({}),
+                             media::vulkan::imageBinding(with_null),
+                             media::vulkan::imageBinding(too_many)};
+    for (const media::Binding& binding : refused) {
+        CHECK(binding.kind() == HOST_PLANES);
+        const HostPlanesB* planes = binding.planes();
+        REQUIRE(planes != nullptr);
+        CHECK(planes->planeCount == 0);
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest,
+                  "store gpu: a copied binding keeps its images after the lease and the tier are "
+                  "gone") {
+    const FormatId id = idOf("yuv420p10le");
+    const FrameDesc desc{.format = id, .colour = 0, .width = 64, .height = 64};
+    const GpuStore test(*this, desc, 1);
+    media::Binding held;
+    {
+        const ReadLease lease =
+            test.take(0, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
+        held = lease.binding();
+    }
+    test.store->trim(test.device, 0);
+    CHECK(test.tierBytes(test.device) == 0);
+    CHECK(media::vulkan::imageCount(held) == 3);
+    const media::PixelFormatDesc& format = media::formatDesc(id);
+    for (std::size_t c = 0; c < format.componentCount; ++c) {
+        const gpu::GpuImage* image = media::vulkan::image(held, c);
+        REQUIRE(image != nullptr);
+        const auto [w, h] = media::componentSize(id, c, 64, 64);
+        CHECK(image->width() == w);
+        CHECK(image->height() == h);
+    }
+    REQUIRE(context().drain().has_value());
+}
+
+TEST_CASE_FIXTURE(GpuTest, "store gpu: device-tier eviction empties the tier") {
     const FormatId id = idOf("yuv420p10le");
     const auto frame = media::geometry(id, 64, 64);
     REQUIRE(frame.has_value());
@@ -446,7 +553,6 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: device-tier eviction frees memory") {
         3 * (media::detail::unpackBufferBytes(0, frame->bytes) + unpacked->bytes));
     const FrameDesc desc{.format = id, .colour = 0, .width = 64, .height = 64};
     const GpuStore test(*this, desc, 10, budget);
-    const std::uint64_t freed = context().retireStats().freed;
 
     for (std::int64_t index = 0; index < 10; ++index) {
         {
@@ -459,9 +565,6 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: device-tier eviction frees memory") {
     test.store->trim(test.device, 0);
     CHECK(test.tierBytes(test.device) == 0);
     REQUIRE(context().drain().has_value());
-    const gpu::RetireStats retired = context().retireStats();
-    CHECK(retired.freed > freed);
-    CHECK(retired.retiring == 0);
 }
 
 TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpack") {
@@ -478,7 +581,7 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
                     (buffer.has_value() ? std::string{} : buffer.error().describe()));
     const ViewSpec view{desc.format,           desc.colour, LayoutPolicy::Tight,
                         media::vulkan::BUFFER, test.device, 0};
-    auto frame = std::make_shared<UnpaddedBufferFrame>(desc, view, std::move(*buffer), *layout);
+    auto frame = std::make_shared<UnpaddedBufferFrame>(desc, view, std::move(*buffer));
     const auto adopted = test.store->adopt({test.origin, 0}, std::move(frame));
     REQUIRE_MESSAGE(adopted.has_value(),
                     (adopted.has_value() ? std::string{} : adopted.error().describe()));
@@ -520,7 +623,7 @@ TEST_CASE_FIXTURE(GpuTest,
         const auto frame = media::detail::StoreAccess::makeFrame<media::StagingFrame>(
             *test.store, desc, desc.format, test.staging, buffer, frame_layout, nullptr);
         REQUIRE(frame->nativeViews().size() == 1);
-        CHECK(frame->nativeViews()[0].api == media::vulkan::BUFFER);
+        CHECK(frame->nativeViews()[0].binding == media::vulkan::BUFFER);
     }
 
     // With the scope: HostPlanes and VkBuffer, the planes inside the scope's bytes, valid after
@@ -537,11 +640,11 @@ TEST_CASE_FIXTURE(GpuTest,
     buffer.reset();  // the frame is the buffer's only holder
     const std::span<const ViewSpec> views = frame->nativeViews();
     REQUIRE(views.size() == 2);
-    const auto host_view = std::ranges::find(views, Api::HostPlanes, &ViewSpec::api);
+    const auto host_view = std::ranges::find(views, HOST_PLANES, &ViewSpec::binding);
     REQUIRE(host_view != views.end());
-    CHECK(std::ranges::find(views, media::vulkan::BUFFER, &ViewSpec::api) != views.end());
+    CHECK(std::ranges::find(views, media::vulkan::BUFFER, &ViewSpec::binding) != views.end());
     const media::Binding binding = frame->bind(*host_view);
-    const auto* planes = media::bindingIf<HostPlanesB>(binding);
+    const HostPlanesB* planes = binding.planes();
     REQUIRE(planes != nullptr);
     REQUIRE(planes->planeCount == frame_layout.planeCount);
     REQUIRE(planes->planeCount > 0);

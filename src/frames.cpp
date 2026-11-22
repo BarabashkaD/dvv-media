@@ -10,10 +10,12 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/frame.h"
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
+#include "frames_vulkan.h"
 
 namespace dvv::media {
 
@@ -65,13 +67,6 @@ std::span<std::byte> HostFrame::data() noexcept {
     return whole.subspan(data_offset_, static_cast<std::size_t>(layout->bytes));
 }
 
-void HostFrame::setDataOffset(std::size_t offset) noexcept {
-    if (sealed_.load(std::memory_order_acquire)) {
-        return;  // published: leaseholders read the offset without synchronisation
-    }
-    data_offset_ = offset;
-}
-
 std::span<const ViewSpec> HostFrame::nativeViews() const noexcept {
     return {&view_, 1};
 }
@@ -110,12 +105,13 @@ StagingFrame::StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId
     : Managed<StagingFrame>(std::move(key)),
       desc_(desc),
       buffer_(std::move(buffer)),
+      buffer_binding_(vulkan::bufferBinding(buffer_)),
       geometry_(geometry),
       host_read_(std::move(host_read)) {
     const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0};
     if (buffer_ && host_read_ && buffer_->desc().memory == gpu::MemoryUsage::HostReadback) {
         ViewSpec host_view = buffer_view;
-        host_view.api = Api::HostPlanes;
+        host_view.binding = HOST_PLANES;
         views_[view_count_++] = host_view;
     }
     views_[view_count_++] = buffer_view;
@@ -131,8 +127,8 @@ Binding StagingFrame::bind(const ViewSpec& native) const {
     if (std::ranges::find(nativeViews(), native) == nativeViews().end()) {
         return HostPlanesB{};
     }
-    if (native.api == vulkan::BUFFER) {
-        return VkBufferB{.buffer = buffer_, .offset = 0, .geometry = geometry_};
+    if (native.binding == vulkan::BUFFER) {
+        return buffer_binding_;
     }
     HostPlanesB planes;
     const std::span<const std::byte> read = host_read_->bytes();  // the view exists with a scope
@@ -156,13 +152,12 @@ std::size_t StagingFrame::bytes() const noexcept {
 // ---- VkBufferFrame ----
 
 VkBufferFrame::VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain domain,
-                             std::shared_ptr<gpu::GpuBuffer> buffer,
-                             FrameGeometry geometry) noexcept
+                             std::shared_ptr<gpu::GpuBuffer> buffer) noexcept
     : Managed<VkBufferFrame>(std::move(key)),
       desc_(desc),
       view_{desc.format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0},
       buffer_(std::move(buffer)),
-      geometry_(geometry) {}
+      buffer_binding_(vulkan::bufferBinding(buffer_)) {}
 
 std::span<const ViewSpec> VkBufferFrame::nativeViews() const noexcept {
     return {&view_, 1};
@@ -172,7 +167,7 @@ Binding VkBufferFrame::bind(const ViewSpec& native) const {
     if (native != view_) {
         return HostPlanesB{};
     }
-    return VkBufferB{.buffer = buffer_, .offset = 0, .geometry = geometry_};
+    return buffer_binding_;
 }
 
 std::size_t VkBufferFrame::bytes() const noexcept {
@@ -188,7 +183,10 @@ VkPlanesFrame::VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, Format
     : Managed<VkPlanesFrame>(std::move(key)),
       desc_(desc),
       view_{format, colour, LayoutPolicy::Opaque, vulkan::IMAGE, domain, 0},
-      planes_{.planes = std::move(planes), .planeCount = plane_count} {
+      binding_(vulkan::imageBinding(
+          plane_count <= planes.size()
+              ? std::span<const std::shared_ptr<gpu::GpuImage>>(planes).first(plane_count)
+              : std::span<const std::shared_ptr<gpu::GpuImage>>{})) {
     try {
         if (const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height)) {
             bytes_ = static_cast<std::size_t>(layout->bytes);
@@ -206,7 +204,7 @@ Binding VkPlanesFrame::bind(const ViewSpec& native) const {
     if (native != view_) {
         return HostPlanesB{};
     }
-    return planes_;
+    return binding_;
 }
 
 }  // namespace dvv::media

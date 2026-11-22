@@ -51,8 +51,6 @@ struct ColourSpec {
 [[nodiscard]] ColourParams merged(const ColourSpec& spec, ColourModel model) noexcept;
 // merged(spec, ColourModel::Yuv).
 [[nodiscard]] ColourParams merged(const ColourSpec& spec) noexcept;
-// merged(colourSpecFromQuery(uri)), with the same errors.
-[[nodiscard]] Result<ColourParams> colourFromQuery(const Uri& uri);
 
 // The four fields of a colour (CLI output, tests): the fields that are not Unspecified, in the
 // order range, matrix, kr, kb, transfer, primaries, with the names below; kr and kb (Custom only)
@@ -71,11 +69,7 @@ struct ColourSpec {
 [[nodiscard]] std::string_view colourName(ColourMatrix matrix) noexcept;
 [[nodiscard]] std::string_view colourName(TransferFn transfer) noexcept;
 [[nodiscard]] std::string_view colourName(Primaries primaries) noexcept;
-// The value of a URI spelling. Errc::Format "bad range|matrix|transfer|primaries 'x' (<names>)" as
-// above.
+// The range of a URI spelling. Errc::Format "bad range 'x' (full, limited)".
 [[nodiscard]] Result<ColourRange> parseColourRange(std::string_view text);
-[[nodiscard]] Result<ColourMatrix> parseColourMatrix(std::string_view text);
-[[nodiscard]] Result<TransferFn> parseTransferFn(std::string_view text);
-[[nodiscard]] Result<Primaries> parsePrimaries(std::string_view text);
 
 }  // namespace dvv::media

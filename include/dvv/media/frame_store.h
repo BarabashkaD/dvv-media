@@ -72,7 +72,7 @@ public:
     [[nodiscard]] SyncPoint ready() const noexcept;
 
     // Valid and empty leases:
-    // The host planes of a HostPlanes binding; null for an empty lease or another binding. Valid
+    // The host planes of a HOST_PLANES binding; null for an empty lease or another binding. Valid
     // while this lease (or a share of it) lives.
     [[nodiscard]] const HostPlanesB* planes() const noexcept;
     // A second lease on the same entry and view, counted like any lease (one more reader for Read,
@@ -143,7 +143,7 @@ struct FrameStoreOptions {
 // Lossless: the unpacked planes of the original; Exact: the original format.
 enum class OriginalFidelity : std::uint8_t { Lossless, Exact };
 struct OriginalRequest {
-    BindingKind api = BindingKind::HostPlanes;
+    BindingKind binding = HOST_PLANES;
     Domain domain{};
     OriginalFidelity fidelity = OriginalFidelity::Lossless;
 };
@@ -181,10 +181,6 @@ public:
     // a detached or unknown origin. `request` is taken by value: the task is lazy.
     [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
         FrameKey key, OriginalRequest request, IExecutor& resume_on,
-        std::source_location where = std::source_location::current());
-    // Deprecated (removed in 1.0.0): acquireOriginal(key, {api, domain, fidelity}, resume_on).
-    [[nodiscard]] Task<Result<OriginalRead>> acquireOriginal(
-        FrameKey key, Api api, Domain domain, IExecutor& resume_on, bool require_exact = false,
         std::source_location where = std::source_location::current());
     [[nodiscard]] Result<ReadLease> adopt(
         const FrameKey& key, std::shared_ptr<IFrame> frame, SyncPoint ready = {},
@@ -251,9 +247,9 @@ private:
     std::unique_ptr<detail::StoreState> state_;
 };
 
-// {desc.format, desc.colour, Any, api, domain, 0}
-[[nodiscard]] ViewSpec originalView(const FrameDesc& desc, Api api, Domain domain);
-// {unpackedFormat(desc.format), desc.colour, Any, api, domain, 0}
-[[nodiscard]] ViewSpec planesView(const FrameDesc& desc, Api api, Domain domain);
+// {desc.format, desc.colour, Any, binding, domain, 0}
+[[nodiscard]] ViewSpec originalView(const FrameDesc& desc, BindingKind binding, Domain domain);
+// {unpackedFormat(desc.format), desc.colour, Any, binding, domain, 0}
+[[nodiscard]] ViewSpec planesView(const FrameDesc& desc, BindingKind binding, Domain domain);
 
 }  // namespace dvv::media

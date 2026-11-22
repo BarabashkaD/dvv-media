@@ -17,7 +17,7 @@ and dvv-gpu next to them at their minimum versions from the same file:
 
 ```powershell
 git clone https://github.com/BarabashkaD/dvv-media
-git clone --branch v0.5.1 https://github.com/BarabashkaD/dvv-build
+git clone --branch v0.6.0 https://github.com/BarabashkaD/dvv-build
 python -m pip install -r dvv-build/tools/requirements.txt
 cmake -DREPO=dvv-media -P dvv-build/tools/fetch-deps.cmake
 ./dvv-build/bootstrap.ps1
@@ -32,7 +32,7 @@ Applications use dvv-media as a git submodule in their `libs/` folder, next to d
 component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.2 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.3 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -145,29 +145,31 @@ It offers views, described by a `ViewSpec`:
 | --- | --- |
 | `format` | the original format, or its unpacked form `unpackedFormat(format)` (the planes) |
 | `colour` | a `ColourId`; must equal the frame's own |
-| `layout` | a `LayoutPolicy`: `Any`, `Tight`, `RowAlign256` or `Opaque` (the GPU image's own layout) |
-| `api` | a `BindingKind` (today `Api`): `BindingKind::HostPlanes`, `vulkan::BUFFER` or `vulkan::IMAGE` |
+| `layout` | a `LayoutPolicy`: `Any`, `Tight` or `Opaque` (the GPU image's own layout) |
+| `binding` | a `BindingKind`: `HOST_PLANES`, `vulkan::BUFFER` or `vulkan::IMAGE` |
 | `domain` | a `Domain`: `MemKind` (`Host`, `HostVisible`, `DeviceLocal`), device and generation |
 | `downscaleLog2` | must be 0 |
 
-The bindings are `HostPlanesB` (read-only spans and strides per plane), `VkBufferB` (the whole
-original in one buffer) and `VkImageB` (one `R8_UINT`/`R16_UINT` image per component, layout
-`GENERAL`). `bindingIf<B>(binding)` gives the binding as a `B`, or null when it holds another
-kind. Compare a `BindingKind` with `==` only; do not switch on it, cast it or hash it: it becomes a
-class in 1.0.0. A file that names `VkBufferB`, `VkImageB`, `StagingFrame`, `VkBufferFrame` or
-`VkPlanesFrame` includes `dvv/media/frame_vulkan.h`. The store's domains are `hostDomain()`, and
-with a GPU `stagingDomain()` and `deviceDomain()`. A view's `Fidelity` is `Exact` (the original
-bytes), `Lossless` (the unpacked planes) or `Derived` (the display view).
+A view's binding is a `Binding`. `planes()` gives the host planes (`HostPlanesB`: read-only
+spans and strides per plane), or null for a GPU binding. `kind()` gives its `BindingKind`.
+`dvv/media/frame_vulkan.h` reads and makes the GPU bindings: `vulkan::buffer(binding)` (the
+whole original in one buffer) and `vulkan::image(binding, plane)` with
+`vulkan::imageCount(binding)` (one `R8_UINT`/`R16_UINT` image per component, layout
+`GENERAL`); an `IFrame` given to `adopt` returns `vulkan::bufferBinding(buffer)` or
+`vulkan::imageBinding(planes)` from `bind()`. A `BindingKind` compares with `==`; `name()`
+gives its name for messages. The store's domains are `hostDomain()`, and with a GPU
+`stagingDomain()` and `deviceDomain()`. A view's `Fidelity` is `Exact` (the original bytes),
+`Lossless` (the unpacked planes) or `Derived` (the display view).
 
 | Format | Binding | Memory | Made by | Fidelity |
 | --- | --- | --- | --- | --- |
-| original | `HostPlanes` | `Host` | `Produce` (the source) | Exact |
-| planes | `HostPlanes` | `Host` | `CpuUnpack` | Lossless |
+| original | `HOST_PLANES` | `Host` | `Produce` (the source) | Exact |
+| planes | `HOST_PLANES` | `Host` | `CpuUnpack` | Lossless |
 | original | `vulkan::BUFFER` | `HostVisible` | `HostToStaging` | Exact |
 | original | `vulkan::BUFFER` | `DeviceLocal` | `Upload` | Exact |
 | planes | `vulkan::IMAGE` | `DeviceLocal` | `GpuUnpack` | Lossless |
-| original | `HostPlanes` | `HostVisible` | `Readback` | Exact |
-| planes | `HostPlanes` | `HostVisible` | `Readback` | Lossless |
+| original | `HOST_PLANES` | `HostVisible` | `Readback` | Exact |
+| planes | `HOST_PLANES` | `HostVisible` | `Readback` | Lossless |
 | display | `vulkan::IMAGE` | `DeviceLocal` | `ToDisplay` | Derived |
 
 A host-only store (no GPU context) has only the first two rows. The store takes the cheapest path
@@ -178,7 +180,7 @@ auto store = FrameStore::create({.cpu = pool, .io = pool, .gpu = context}).value
 const FrameDesc desc = source->info().desc;
 const OriginId origin = store->attach(std::move(source)).value();
 Result<ReadLease> lease = co_await store->acquire(
-    {origin, 0}, planesView(desc, BindingKind::HostPlanes, store->hostDomain()), executor);
+    {origin, 0}, planesView(desc, HOST_PLANES, store->hostDomain()), executor);
 ```
 
 - `acquire(key, want, resume_on)` returns a `ReadLease`, `pin(key, view, resume_on)` a
@@ -192,7 +194,7 @@ Result<ReadLease> lease = co_await store->acquire(
   binding. GPU resources are reached through the lease with `vulkan::image(lease, plane)` and
   `vulkan::buffer(lease)` (`dvv/media/frame_vulkan.h`); they are valid while the lease, or a share
   of it, lives. Keep a share beside any pointer you store.
-- `acquireOriginal(key, {.api, .domain, .fidelity}, resume_on)` returns an `OriginalRead`:
+- `acquireOriginal(key, {.binding, .domain, .fidelity}, resume_on)` returns an `OriginalRead`:
   `OriginalFidelity::Lossless` gives the unpacked planes, `Exact` the original format.
 - `adopt(key, frame)` puts a ready frame into the store as the key's original.
 - The awaiting coroutine always resumes on `resume_on`, never inline; it must outlive the
@@ -384,6 +386,10 @@ and clamps again. Chroma is taken from the nearest sample; alpha is written as 1
 are information only: they are not converted, so BT.2020 shows like BT.709 (as on a monitor that
 ignores them).
 
+The CPU side of the display transform is public: `toDisplayReference()` for one pixel,
+`srgbEncode()` and `srgbDecode()`, `encodeSrgb8()`, and `floatToHalf()` and `halfToFloat()` for
+the RGBA16F texels. Tests of GPU output compare against them.
+
 Colour is one standard (`colour_preset.h`):
 
 | Standard | Token | Matrix | Range (default) | Curve | Primaries |
@@ -435,27 +441,9 @@ then cover the format. A Y4M `C` tag needs a line in `src/sources/y4m.cpp`.
 
 ## Paths
 
-URI and command-line paths are UTF-8; they never pass through the ANSI code page. Path text comes
-from dvv-base (`dvv/base/utf8.h`): `dvv::pathText` names a file again, `dvv::pathDisplayText` is for
-messages, `dvv::pathFromText` turns text into a path. dvv-media's `pathFromUtf8` and `utf8FromPath`
-forward to them until 1.0.0. On POSIX a path keeps bytes that are not UTF-8; on Windows they
-become U+FFFD.
-
-## Deprecated (removed in 1.0.0)
-
-- `VkBufferB::buffer`, `VkImageB::planes` and `StagingFrame::buffer()`: use
-  `vulkan::buffer(lease)` and `vulkan::image(lease, plane)`. The GPU frame classes and the
-  `VkBufferB` and `VkImageB` bindings move from frame.h to frame_vulkan.h, and frame.h names no
-  dvv-gpu type.
-- `Api::VkBuffer` and `Api::VkImage`: use `vulkan::BUFFER` and `vulkan::IMAGE`.
-  `LayoutPolicy::VkOptimal`: use `LayoutPolicy::Opaque`.
-- Reading a `Binding` with `std::get_if`, `std::get`, `std::visit` or `std::holds_alternative`:
-  use `bindingIf<B>(binding)` or `Lease::planes()`. `Binding` becomes a class.
-- `acquireOriginal(key, api, domain, resume_on, require_exact)`: use the request form.
-- `PixelFormatDescriptor` and `descriptor(FormatId)`: use `PixelFormatDesc` and `formatDesc`.
-- `pathFromUtf8` and `utf8FromPath`: use `dvv::pathFromText`, `dvv::pathText` or
-  `dvv::pathDisplayText`.
-- `InterfaceKind<ISourceProvider>`: the registry lists source providers by interface.
-- The `SourceFactory` constructor without the unavailable list (for `create()` only).
+URI and command-line paths are UTF-8; they never pass through the ANSI code page. Path text
+comes from dvv-base (`dvv/base/utf8.h`): `dvv::pathText` names a file again,
+`dvv::pathDisplayText` is for messages, `dvv::pathFromText` turns text into a path. On POSIX a
+path keeps bytes that are not UTF-8; on Windows they become U+FFFD.
 
 Licence: MIT.

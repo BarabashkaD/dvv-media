@@ -24,6 +24,7 @@
 #include "dvv/gpu/command_recorder.h"
 #include "dvv/gpu/compute_pipeline.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/display.h"
 #include "dvv/media/display_vulkan.h"

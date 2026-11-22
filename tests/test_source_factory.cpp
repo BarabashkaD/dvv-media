@@ -541,12 +541,6 @@ TEST_CASE_FIXTURE(FactoryTest, "factory: the ticket keys the source to the facto
     CHECK(managed.ownerId() == factory->objectId());
 }
 
-TEST_CASE("factory: InterfaceKind of ISourceProvider is Source") {
-    static_assert(dvv::InterfaceKind<media::ISourceProvider>::value == dvv::Kind::Source);
-    static_assert(dvv::HasInterfaceKind<media::ISourceProvider>);
-    CHECK(true);
-}
-
 TEST_CASE_FIXTURE(FactoryTest, "factory: open returns Cancelled for a stopped token") {
     SUBCASE("stopped before the open: no provider open runs") {
         a().confidence = 95;
@@ -622,25 +616,4 @@ static_assert(media::DEFAULT_FILE_READS == dvv::platform::FileReadMode::Auto);
 
 TEST_CASE("a SourceRequest reads files with DEFAULT_FILE_READS") {
     CHECK(media::SourceRequest{}.fileReads == media::DEFAULT_FILE_READS);
-}
-
-// Kept until 1.0.0: the aggregate forms of 0.1.1 still compile (-Werror).
-TEST_CASE("OpenContext and SourceRequest keep their 0.1.1 initialisers") {
-    const auto io = dvv::ExecutorFactory::makeThreadPool(1);
-    REQUIRE(io.has_value());
-    const media::OpenContext positional{*io.value()};
-    const media::OpenContext designated{.io = *io.value()};
-    CHECK_FALSE(positional.stop.stop_possible());
-    CHECK_FALSE(designated.stop.stop_possible());
-
-    const auto uri = dvv::parseUri("file:x.raw");
-    REQUIRE(uri.has_value());
-    const media::SourceRequest four{uri.value(), std::nullopt, dvv::platform::FileReadMode::Auto,
-                                    std::nullopt};
-    const media::SourceRequest uri_only{uri.value()};
-    const media::SourceRequest reads_only{.uri = uri.value(),
-                                          .fileReads = dvv::platform::FileReadMode::Auto};
-    CHECK_FALSE(uri_only.hint.has_value());
-    CHECK_FALSE(reads_only.hint.has_value());
-    CHECK(four.uri.path == uri.value().path);
 }

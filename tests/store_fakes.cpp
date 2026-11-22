@@ -114,14 +114,14 @@ Task<Result<std::shared_ptr<IFrame>>> FakeConverter::run(detail::ConvertInput in
     if (takeOne(failNext)) {
         co_return makeError(failWith.load(), "fake convert error");
     }
-    const auto* planes = bindingIf<HostPlanesB>(input.binding);
+    const HostPlanesB* planes = input.binding.planes();
     if (planes == nullptr || planes->planeCount == 0) {
         co_return makeError(Errc::Internal, "fake converter: the input has no host planes");
     }
     std::vector<std::byte> payload(planes->planes[0].begin(), planes->planes[0].end());
     ViewSpec view = context.output;
     if (wrongView.load()) {
-        view.layout = LayoutPolicy::RowAlign256;
+        view.layout = LayoutPolicy::Opaque;
     }
     co_return std::shared_ptr<IFrame>(dvv::test::TestAuthority::makeShared<FakeFrame>(
         input.desc, std::vector<ViewSpec>{view}, std::move(payload)));
@@ -159,7 +159,7 @@ StoreTest::StoreTest() {
     const auto gray = findFormat("gray");
     REQUIRE(gray.has_value());
     desc = FrameDesc{gray.value_or(FormatId{0}), 0, 16, 8};
-    hostView = ViewSpec{desc.format, 0, LayoutPolicy::Any, Api::HostPlanes, Domain{}, 0};
+    hostView = ViewSpec{desc.format, 0, LayoutPolicy::Any, HOST_PLANES, Domain{}, 0};
     planesView = hostView;
     planesView.format = unpackedFormat(desc.format);
 }

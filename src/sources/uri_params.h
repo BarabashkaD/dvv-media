@@ -40,5 +40,9 @@ withColourParameters(const std::array<std::string_view, N>& own) {
 // Errc::Format when both forms are given or one of w/h is missing.
 [[nodiscard]] Result<std::optional<std::pair<std::uint32_t, std::uint32_t>>> sizeFromQuery(
     const Uri& uri);
+// A catalogue format by name: unpacked and custom formats are interned only on use, so accepting
+// them would make the same URI open or fail depending on the process's history. Errc::Format
+// "unknown pixel format '<name>'".
+[[nodiscard]] Result<FormatId> parseFormat(std::string_view name);
 
 }  // namespace dvv::media::detail

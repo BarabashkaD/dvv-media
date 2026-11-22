@@ -86,7 +86,7 @@ dvv::Result<std::vector<std::byte>> SourceHarness::originalBytes(
     {
         auto read =
             dvv::syncWait(store_->acquireOriginal({origin, index},
-                                                  {.api = media::Api::HostPlanes,
+                                                  {.binding = media::HOST_PLANES,
                                                    .domain = store_->hostDomain(),
                                                    .fidelity = media::OriginalFidelity::Exact},
                                                   *cpu_));

@@ -170,6 +170,16 @@ TEST_CASE("raw: a truncated frame is Io") {
     }
 }
 
+TEST_CASE("raw: an unpacked format name is refused even after it was interned") {
+    const TemporaryDirectory directory;
+    static_cast<void>(media::unpackedFormat(idOf("yuv420p")));
+    SourceHarness harness;
+    const dvv::Error error = openError(
+        harness, dvv::pathText(writeDefault(directory.path())) + "?fmt=yuv420p@planes&size=33x17");
+    CHECK(error.code == dvv::Errc::Format);
+    CHECK(error.message.find("unknown pixel format 'yuv420p@planes'") != std::string::npos);
+}
+
 TEST_CASE("raw: query size and format") {
     const TemporaryDirectory directory;
     const std::string uri =

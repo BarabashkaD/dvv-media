@@ -25,6 +25,7 @@
 #include "dvv/base/error.h"
 #include "dvv/base/json.h"
 #include "dvv/base/lifetime.h"
+#include "dvv/base/paths.h"
 #include "dvv/base/task.h"
 #include "dvv/base/uri.h"
 #include "dvv/base/utf8.h"
@@ -61,16 +62,6 @@ constexpr std::string_view NO_SIZE =
 
 using Size = std::pair<std::uint32_t, std::uint32_t>;
 
-// A catalogue format by name (as the synthetic provider: unpacked and custom formats are interned
-// only on use, so accepting them would make a URI open or fail depending on the process's history).
-Result<FormatId> parseFormat(std::string_view name) {
-    const std::optional<FormatId> format = findFormat(name);
-    if (!format || std::ranges::find(catalogue(), *format) == catalogue().end()) {
-        return makeError(Errc::Format, std::format("unknown pixel format '{}'", name));
-    }
-    return *format;
-}
-
 // A format given as fmt= text: a catalogue name or "@<pixel-format JSON>" (read here: blocking).
 Result<FormatId> formatFromText(std::string_view text) {
     if (text.starts_with('@')) {
@@ -78,13 +69,7 @@ Result<FormatId> formatFromText(std::string_view text) {
         DVV_TRY(const json::Value value, json::parse(json_text));
         return formatFromJson(value);
     }
-    return parseFormat(text);
-}
-
-// A file name without its folder, for notes and warnings.
-std::string_view baseName(std::string_view path) {
-    const std::size_t slash = path.find_last_of("/\\");
-    return slash == std::string_view::npos ? path : path.substr(slash + 1);
+    return detail::parseFormat(text);
 }
 
 // The request's sidecar (D5 design §3.5): its description when it parses, else the warning
@@ -102,7 +87,7 @@ std::string ignoredWarning(std::string_view path, std::string reason) {
     if (reason.starts_with(prefix)) {
         reason.erase(0, prefix.size());
     }
-    const std::string_view name = baseName(path);
+    const std::string_view name = dvv::baseNameOf(path);
     for (std::size_t at = reason.find(path); !path.empty() && at != std::string::npos;
          at = reason.find(path, at + name.size())) {
         reason.replace(at, path.size(), name);
@@ -188,7 +173,7 @@ Known gather(const SourceRequest& request) {
     if (const auto fmt = uri.param("fmt")) {
         known.explicitFormat = true;
         if (!fmt->starts_with('@')) {
-            if (const auto format = parseFormat(*fmt)) {
+            if (const auto format = detail::parseFormat(*fmt)) {
                 known.format = *format;
             }
         }
@@ -287,7 +272,7 @@ Result<Opened> openFile(const SourceRequest& request) {
         } else if (name && name->format) {
             format = *name->format;
         } else {
-            DVV_TRY(format, parseFormat(GUESS_FORMAT));
+            DVV_TRY(format, detail::parseFormat(GUESS_FORMAT));
         }
         fmt_param = formatDesc(format).name;
     }
@@ -357,7 +342,8 @@ Result<Opened> openFile(const SourceRequest& request) {
     info.provider = "raw";
     info.clipFile = clip_file;
     if (from_sidecar) {
-        std::string note = std::format("{} describes {}", baseName(clip_file), baseName(uri.path));
+        std::string note =
+            std::format("{} describes {}", dvv::baseNameOf(clip_file), dvv::baseNameOf(uri.path));
         if (name) {
             note += " (it wins over the file name)";
         }
@@ -459,7 +445,7 @@ public:
             match.why = "explicit clip description";
         } else if (has_size && has_format && known.sidecar) {
             match.confidence = 75;
-            match.why = std::format("format and size from {}", baseName(known.sidecarPath));
+            match.why = std::format("format and size from {}", dvv::baseNameOf(known.sidecarPath));
         } else if (has_size && has_format) {
             match.confidence = 70;
             match.why = "size and format from the file name";

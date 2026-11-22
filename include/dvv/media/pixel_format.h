@@ -52,8 +52,7 @@ struct PlaneDesc {
     std::array<SampleSlot, MAX_SLOTS> slots{};  // every sample of one group; other bits are padding
     bool operator==(const PlaneDesc&) const = default;
 };
-// Deprecated name (removed in 1.0.0): use PixelFormatDesc.
-struct PixelFormatDescriptor {
+struct PixelFormatDesc {
     std::string name;  // FFmpeg pix_fmt name ("v210": codec name)
     ColourModel model = ColourModel::Gray;
     std::uint8_t componentCount = 0;
@@ -61,10 +60,8 @@ struct PixelFormatDescriptor {
     std::uint8_t planeCount = 0;
     std::array<PlaneDesc, MAX_PLANES> planes{};
     std::uint8_t widthMultiple = 1;  // the width must be a multiple of this (v210: 2)
-    bool operator==(const PixelFormatDescriptor&) const = default;
+    bool operator==(const PixelFormatDesc&) const = default;
 };
-
-using PixelFormatDesc = PixelFormatDescriptor;  // the name to use; 1.0.0 flips them
 
 // Checks a description, including the GPU limits. Errc::Format with the reason (rules in the plan).
 [[nodiscard]] Result<void> validate(const PixelFormatDesc& desc);
@@ -75,10 +72,6 @@ using PixelFormatDesc = PixelFormatDescriptor;  // the name to use; 1.0.0 flips 
 [[nodiscard]] std::span<const FormatId> catalogue();
 // Unknown id: a reference to a static empty description (name "", no components, no planes).
 [[nodiscard]] const PixelFormatDesc& formatDesc(FormatId format) noexcept;
-// Deprecated (removed in 1.0.0): formatDesc().
-[[nodiscard]] inline const PixelFormatDesc& descriptor(FormatId format) noexcept {
-    return formatDesc(format);
-}
 // Exact, case-sensitive name match over every interned format (catalogue, unpacked, custom).
 [[nodiscard]] std::optional<FormatId> findFormat(std::string_view name) noexcept;
 // FFmpeg's deprecated full-range names: what a decoder output named yuvj420p,
@@ -95,7 +88,6 @@ struct FormatAlias {
 // The lossless planar form (D5), named "<name>@planes"; interned on first use; thread-safe;
 // idempotent for unpacked formats; an unknown id is returned unchanged.
 [[nodiscard]] FormatId unpackedFormat(FormatId format);
-[[nodiscard]] bool isUnpacked(FormatId format) noexcept;
 
 struct PlaneGeometry {
     std::uint64_t offset = 0;  // from the frame start

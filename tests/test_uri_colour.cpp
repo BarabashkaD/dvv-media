@@ -24,19 +24,29 @@ TEST_CASE("uri_colour.h: the public colour query") {
     CHECK(media::COLOUR_PARAMETERS == std::array<std::string_view, 2>{"colour", "range"});
 
     const auto uri = dvv::parseUri("file:a.mkv?colour=bt601-pal&range=full");
-    REQUIRE(uri.has_value());
-    const auto colour = media::colourFromQuery(*uri);
-    REQUIRE(colour.has_value());
-    CHECK(media::colourParameters(*colour) == Parameters{{"range", "full"},
-                                                         {"matrix", "bt601"},
-                                                         {"transfer", "bt1886"},
-                                                         {"primaries", "bt601-625"}});
+    CHECK(uri.has_value());
+    if (uri) {
+        const auto colour = media::colourSpecFromQuery(*uri).transform(
+            [](const media::ColourSpec& s) { return media::merged(s); });
+        CHECK(colour.has_value());
+        if (colour) {
+            CHECK(media::colourParameters(*colour) == Parameters{{"range", "full"},
+                                                                 {"matrix", "bt601"},
+                                                                 {"transfer", "bt1886"},
+                                                                 {"primaries", "bt601-625"}});
+        }
+    }
 
     const auto wide = dvv::parseUri("file:a.mkv?range=wide");
-    REQUIRE(wide.has_value());
-    const auto bad = media::colourFromQuery(*wide);
-    REQUIRE_FALSE(bad.has_value());
-    CHECK(bad.error().code == dvv::Errc::Format);
+    CHECK(wide.has_value());
+    if (wide) {
+        const auto bad = media::colourSpecFromQuery(*wide).transform(
+            [](const media::ColourSpec& s) { return media::merged(s); });
+        CHECK_FALSE(bad.has_value());
+        if (!bad) {
+            CHECK(bad.error().code == dvv::Errc::Format);
+        }
+    }
 }
 
 TEST_CASE("uri_colour.h: unknownParameterText names colour= for the removed keys") {
@@ -64,7 +74,6 @@ TEST_CASE("uri_colour.h: colour= keeps the query's form") {
                                                       .primaries = media::Primaries::Bt709,
                                                       .kr = 0,
                                                       .kb = 0});
-    CHECK(media::colourFromQuery(*uri) == media::merged(*spec));
     CHECK(media::colourParameters(*spec) == Parameters{{"colour", "bt709"}, {"range", "full"}});
     CHECK(media::colourParameters(media::ColourSpec{}).empty());
     CHECK(media::colourParameters(
@@ -77,13 +86,7 @@ TEST_CASE("uri_colour.h: colour= keeps the query's form") {
     CHECK(media::colourName(media::TransferFn::Bt1886) == "bt1886");
     CHECK(media::colourName(media::Primaries::Bt601_525) == "bt601-525");
     CHECK(media::colourName(media::Primaries::Unspecified).empty());
-    CHECK(media::parseColourMatrix("rgb") == media::ColourMatrix::Rgb);
     CHECK(media::parseColourRange("full") == media::ColourRange::Full);
-    CHECK(media::parseTransferFn("hlg") == media::TransferFn::Hlg);
-    CHECK(media::parsePrimaries("bt2020") == media::Primaries::Bt2020);
-    const auto wrong = media::parsePrimaries("p3");
-    REQUIRE_FALSE(wrong.has_value());
-    CHECK(wrong.error().message == "bad primaries 'p3' (bt601-525, bt601-625, bt709, bt2020)");
 }
 
 TEST_CASE("uri_colour.h: merged() never takes the range from the standard (D5R §1.3)") {

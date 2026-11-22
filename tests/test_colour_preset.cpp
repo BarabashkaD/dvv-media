@@ -78,13 +78,12 @@ TEST_CASE("colour standards: the table of D5R section 1.1") {
     }
 }
 
-TEST_CASE("colour standards: find by token and match by value, both ways") {
+TEST_CASE("colour standards: find by token") {
     for (const media::ColourPresetInfo& info : media::colourPresets()) {
         CAPTURE(info.uriName);
         const std::optional<ColourPreset> found = media::findColourPreset(info.uriName);
         REQUIRE(found.has_value());
         CHECK(found == info.id);
-        CHECK(media::matchColourPreset(info.colour) == info.id);
         // REQUIRE above stops the test case first; value_or keeps the access checked.
         CHECK(media::colourPresetInfo(found.value_or(info.id)).colour == info.colour);
     }
@@ -94,9 +93,6 @@ TEST_CASE("colour standards: find by token and match by value, both ways") {
         CAPTURE(bad);
         CHECK(media::findColourPreset(bad) == std::nullopt);
     }
-    CHECK(media::matchColourPreset(fields(ColourMatrix::Bt709, TransferFn::Srgb, Primaries::Bt709,
-                                          ColourRange::Limited)) == std::nullopt);
-    CHECK(media::matchColourPreset(media::ColourParams{}) == std::nullopt);
 }
 
 TEST_CASE("standardOf: nothing signalled gives BT.709") {

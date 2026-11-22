@@ -15,6 +15,7 @@
 #include <system_error>
 #include <utility>
 
+#include "dvv/media/pixel_format.h"
 #include "dvv/media/rate_size_text.h"
 #include "dvv/media/uri_colour.h"
 
@@ -119,6 +120,14 @@ Result<std::uint64_t> parseUnsigned(std::string_view name, std::string_view text
     }
     return makeError(Errc::Format,
                      std::format("bad {} '{}' (expected an unsigned integer)", name, text));
+}
+
+Result<FormatId> parseFormat(std::string_view name) {
+    const std::optional<FormatId> format = findFormat(name);
+    if (!format || std::ranges::find(catalogue(), *format) == catalogue().end()) {
+        return makeError(Errc::Format, std::format("unknown pixel format '{}'", name));
+    }
+    return *format;
 }
 
 Result<void> checkParameters(const Uri& uri, std::span<const std::string_view> allowed) {

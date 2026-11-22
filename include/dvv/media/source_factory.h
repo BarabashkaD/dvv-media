@@ -19,7 +19,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -31,7 +30,6 @@
 #include "dvv/media/source.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/file_reader.h"
-#include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
 
 namespace dvv::media {
@@ -159,10 +157,6 @@ public:
     [[nodiscard]] static Result<std::unique_ptr<SourceFactory>> create(
         ComponentRegistry& registry, std::shared_ptr<IExecutor> io,
         std::source_location where = std::source_location::current());
-    // For create() only (the key). Deprecated (removed in 1.0.0): the form without the
-    // unavailable list.
-    SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
-                  std::shared_ptr<IExecutor> io) noexcept;
     // For create() only (the key).
     SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
                   std::vector<UnavailableProvider> unavailable,
@@ -223,8 +217,3 @@ CreationKey<SourceFactory> SourceFactory::issueKey(OpenTicket&& ticket) {
 [[nodiscard]] bool isNoProviderMatch(const Error& error);
 
 }  // namespace dvv::media
-
-// Deprecated (removed in 1.0.0): the registry lists source providers by interface.
-template <>
-struct dvv::InterfaceKind<dvv::media::ISourceProvider>
-    : std::integral_constant<dvv::Kind, dvv::Kind::Source> {};

@@ -183,7 +183,7 @@ ViewSpec displayView(const Domain& device_domain) {
     return ViewSpec{.format = displayFormat(),
                     .colour = displayColour(),
                     .layout = LayoutPolicy::Any,
-                    .api = vulkan::IMAGE,
+                    .binding = vulkan::IMAGE,
                     .domain = device_domain,
                     .downscaleLog2 = 0};
 }

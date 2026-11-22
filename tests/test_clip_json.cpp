@@ -96,6 +96,8 @@ TEST_CASE("clip JSON: @ paths") {
           "@/formats/x.json");
     CHECK(accepted(R"({"rawreelClip": 1, "format": "@X:/formats/x.json"})").format ==
           "@X:/formats/x.json");
+    CHECK(accepted(R"({"rawreelClip": 1, "format": "@x:\\formats\\x.json"})").format ==
+          "@x:/formats/x.json");
     // A clip path without a folder leaves the path as written.
     const auto bare = media::parseClipJson(R"({"rawreelClip": 1, "format": "@x.json"})", "c.json");
     REQUIRE(bare.has_value());

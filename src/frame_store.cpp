@@ -17,7 +17,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "converters.h"
@@ -43,20 +42,6 @@ namespace {
 // The device tier's budget in a store with a fake device domain and deviceBudget 0.
 constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 
-// A binding kind is compared with == only (types.h).
-[[nodiscard]] std::string_view apiName(BindingKind api) noexcept {
-    if (api == Api::HostPlanes) {
-        return "HostPlanes";
-    }
-    if (api == vulkan::BUFFER) {
-        return "VkBuffer";
-    }
-    if (api == vulkan::IMAGE) {
-        return "VkImage";
-    }
-    return "?";
-}
-
 [[nodiscard]] std::string_view kindName(MemKind kind) noexcept {
     switch (kind) {
         case MemKind::Host: return "Host";
@@ -70,7 +55,6 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
     switch (layout) {
         case LayoutPolicy::Any: return "Any";
         case LayoutPolicy::Tight: return "Tight";
-        case LayoutPolicy::RowAlign256: return "RowAlign256";
         case LayoutPolicy::Opaque: return "Opaque";
     }
     return "?";
@@ -79,7 +63,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
 // "gray@planes (HostPlanes, Host, Any)" for messages.
 [[nodiscard]] std::string viewText(const ViewSpec& view) {
     std::string text =
-        std::format("{} ({}, {}, {}", formatDesc(view.format).name, apiName(view.api),
+        std::format("{} ({}, {}, {}", formatDesc(view.format).name, view.binding.name(),
                     kindName(view.domain.kind), layoutName(view.layout));
     if (view.downscaleLog2 != 0) {
         text += std::format(", downscale log2 {}", static_cast<unsigned>(view.downscaleLog2));
@@ -102,7 +86,7 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
             return std::nullopt;
         }
         return detail::StateKey{
-            .unpacked = false, .api = view.api, .kind = view.domain.kind, .display = true};
+            .unpacked = false, .binding = view.binding, .kind = view.domain.kind, .display = true};
     }
     bool unpacked = false;
     if (view.format == record.desc.format) {
@@ -115,7 +99,8 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
     if (view.colour != record.desc.colour || view.downscaleLog2 != 0 || !has_tier) {
         return std::nullopt;
     }
-    return detail::StateKey{.unpacked = unpacked, .api = view.api, .kind = view.domain.kind};
+    return detail::StateKey{
+        .unpacked = unpacked, .binding = view.binding, .kind = view.domain.kind};
 }
 
 // Evicts unleased entries of every tier above its budget (§5.2). A tier's domain and budget are
@@ -190,8 +175,8 @@ Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc&
         settle();
     }
     DVV_TRY(platform::AlignedBuffer buffer, std::move(allocated));
-    const ViewSpec view{desc.format,     desc.colour,          LayoutPolicy::Tight,
-                        Api::HostPlanes, store_->hostDomain(), 0};
+    const ViewSpec view{desc.format, desc.colour,          LayoutPolicy::Tight,
+                        HOST_PLANES, store_->hostDomain(), 0};
     return std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()), desc,
                                        view, std::move(buffer), capacity, data_offset);
 }
@@ -211,8 +196,8 @@ Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
                                      "description than the source's",
                                      key_.index, key_.origin));
     }
-    const ViewSpec original{desc_.format,    desc_.colour,         LayoutPolicy::Tight,
-                            Api::HostPlanes, store_->hostDomain(), 0};
+    const ViewSpec original{desc_.format, desc_.colour,         LayoutPolicy::Tight,
+                            HOST_PLANES,  store_->hostDomain(), 0};
     const std::span<const ViewSpec> views = frame->nativeViews();
     if (std::ranges::find(views, original) == views.end()) {
         return makeError(Errc::Internal,
@@ -272,8 +257,7 @@ SyncPoint Lease<K>::ready() const noexcept {
 }
 template <LeaseKind K>
 const HostPlanesB* Lease<K>::planes() const noexcept {
-    // An empty lease holds a default Binding, which is an empty HostPlanesB.
-    return *this ? std::get_if<HostPlanesB>(&core_.binding) : nullptr;
+    return *this ? core_.binding.planes() : nullptr;
 }
 template <LeaseKind K>
 Lease<K> Lease<K>::share(std::source_location where) const {
@@ -552,19 +536,6 @@ Task<Result<PinLease>> FrameStore::pin(FrameKey key, ViewSpec view, IExecutor& r
     co_return result;
 }
 
-Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, Api api, Domain domain,
-                                                       IExecutor& resume_on, bool require_exact,
-                                                       std::source_location where) {
-    // A coroutine forwarder would copy the arguments into a second frame; this one returns the
-    // lazy task of the request form.
-    return acquireOriginal(
-        key,
-        {.api = api,
-         .domain = domain,
-         .fidelity = require_exact ? OriginalFidelity::Exact : OriginalFidelity::Lossless},
-        resume_on, where);
-}
-
 Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, OriginalRequest request,
                                                        IExecutor& resume_on,
                                                        std::source_location where) {
@@ -589,8 +560,8 @@ Task<Result<OriginalRead>> FrameStore::acquireOriginal(FrameKey key, OriginalReq
                                         key.index, key.origin));
     }
     const ViewSpec want = request.fidelity == OriginalFidelity::Exact
-                              ? originalView(*desc, request.api, request.domain)
-                              : planesView(*desc, request.api, request.domain);
+                              ? originalView(*desc, request.binding, request.domain)
+                              : planesView(*desc, request.binding, request.domain);
     Result<ReadLease> lease =
         co_await acquire(key, want, resume_on, where);  // resumes on resume_on
     if (!lease) {
@@ -820,8 +791,8 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
         }
         return makeError(Errc::Unsupported,
                          std::format("no converter path from {} {}/{} to {}", original,
-                                     apiName(detail::PRODUCED.api), kindName(detail::PRODUCED.kind),
-                                     viewText(want)));
+                                     detail::PRODUCED.binding.name(),
+                                     kindName(detail::PRODUCED.kind), viewText(want)));
     }
     const auto& [start, start_view] = starts[path->source];
     if (start && path->steps.empty()) {
@@ -845,7 +816,7 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
                                    : (state.unpacked ? record.unpacked : record.desc.format),
                      state.display ? displayColour() : record.desc.colour,
                      converter != nullptr ? converter->outputLayout() : LayoutPolicy::Tight,
-                     state.api,
+                     state.binding,
                      s.tiers[tier].domain,
                      0};
         output->fidelity = converter != nullptr
@@ -1423,12 +1394,13 @@ std::vector<LeaseInfo> FrameStore::outstandingLeases() const {
     return leases;
 }
 
-ViewSpec originalView(const FrameDesc& desc, Api api, Domain domain) {
-    return ViewSpec{desc.format, desc.colour, LayoutPolicy::Any, api, domain, 0};
+ViewSpec originalView(const FrameDesc& desc, BindingKind binding, Domain domain) {
+    return ViewSpec{desc.format, desc.colour, LayoutPolicy::Any, binding, domain, 0};
 }
 
-ViewSpec planesView(const FrameDesc& desc, Api api, Domain domain) {
-    return ViewSpec{unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any, api, domain, 0};
+ViewSpec planesView(const FrameDesc& desc, BindingKind binding, Domain domain) {
+    return ViewSpec{
+        unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any, binding, domain, 0};
 }
 
 }  // namespace dvv::media

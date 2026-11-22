@@ -125,18 +125,6 @@ Result<ColourRange> parseColourRange(std::string_view text) {
     return parseName("range", text, RANGES);
 }
 
-Result<ColourMatrix> parseColourMatrix(std::string_view text) {
-    return parseName("matrix", text, MATRICES);
-}
-
-Result<TransferFn> parseTransferFn(std::string_view text) {
-    return parseName("transfer", text, TRANSFERS);
-}
-
-Result<Primaries> parsePrimaries(std::string_view text) {
-    return parseName("primaries", text, PRIMARIES);
-}
-
 ColourParams merged(const ColourSpec& spec, ColourModel model) noexcept {
     ColourParams colour{};
     if (spec.preset) {
@@ -157,11 +145,6 @@ ColourParams merged(const ColourSpec& spec, ColourModel model) noexcept {
 
 ColourParams merged(const ColourSpec& spec) noexcept {
     return merged(spec, ColourModel::Yuv);
-}
-
-Result<ColourParams> colourFromQuery(const Uri& uri) {
-    DVV_TRY(const ColourSpec spec, colourSpecFromQuery(uri));
-    return merged(spec);
 }
 
 Result<ColourSpec> colourSpecFromQuery(const Uri& uri) {

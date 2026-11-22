@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -19,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "dvv/base/error.h"
 #include "dvv/base/log.h"
 #include "dvv/base/utf8.h"
 #include "dvv/media/clip_json.h"
@@ -34,19 +34,6 @@ constexpr int OPEN_THRESHOLD = 60;
 constexpr int TIE_MARGIN = 10;
 // The bytes of a file that match() sees.
 constexpr std::uint64_t HEAD_BYTES = 4096;
-
-// Describes the exception being handled; call only from a catch block.
-std::string describeCurrentException() {
-    try {
-        throw;
-    } catch (const std::bad_expected_access<Error>& error) {
-        return error.error().describe();
-    } catch (const std::exception& error) {
-        return error.what();
-    } catch (...) {
-        return "unknown exception";
-    }
-}
 
 // The first HEAD_BYTES bytes of the request's file; runs on the io executor.
 Result<std::vector<std::byte>> readHead(const Uri& uri) {
@@ -169,10 +156,6 @@ Result<std::unique_ptr<SourceFactory>> SourceFactory::create(ComponentRegistry& 
 }
 
 SourceFactory::SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
-                             std::shared_ptr<IExecutor> io) noexcept
-    : SourceFactory(std::move(key), std::move(providers), {}, std::move(io)) {}
-
-SourceFactory::SourceFactory(CreationKey<SourceFactory> key, std::vector<ProviderEntry> providers,
                              std::vector<UnavailableProvider> unavailable,
                              std::shared_ptr<IExecutor> io) noexcept
     : Managed(std::move(key)),
@@ -278,7 +261,7 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         try {
             match = providers_[index].provider->match(full_request, head);
         } catch (...) {
-            failure = describeCurrentException();
+            failure = dvv::describeCurrentException();
         }
         if (!match) {
             co_return std::unexpected(providerFailed(index, failure));
@@ -300,7 +283,7 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::open(const SourceRequest&
         try {
             match = providers_[index].provider->match(full_request, head);
         } catch (...) {
-            failure = describeCurrentException();
+            failure = dvv::describeCurrentException();
         }
         if (!match) {
             co_return std::unexpected(providerFailed(index, failure));
@@ -351,7 +334,7 @@ Task<Result<SourceFactory::OpenResult>> SourceFactory::openWith(std::size_t inde
         opened = co_await entry.provider->open(
             OpenTicket(objectId(), std::source_location::current()), request, guess, context);
     } catch (...) {
-        failure = describeCurrentException();
+        failure = dvv::describeCurrentException();
     }
     if (!opened) {
         co_return std::unexpected(providerFailed(index, failure));

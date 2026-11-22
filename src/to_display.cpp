@@ -17,6 +17,7 @@
 #include "dvv/media/types.h"
 #include "dvv_media_shaders/to_display.h"
 #include "gpu_unpack.h"
+#include "image_format_name.h"
 
 namespace dvv::media::detail {
 
@@ -24,15 +25,6 @@ static_assert(DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT,
               "shaders/to_display.slang binding 4 declares rgba16f; change both together");
 
 namespace {
-
-const char* imageFormatName(VkFormat format) noexcept {
-    switch (format) {
-        case VK_FORMAT_R8_UINT: return "R8_UINT";
-        case VK_FORMAT_R16_UINT: return "R16_UINT";
-        case VK_FORMAT_R16G16B16A16_SFLOAT: return "R16G16B16A16_SFLOAT";
-        default: return "another format";
-    }
-}
 
 std::uint32_t transferCode(TransferFn transfer) noexcept {
     switch (transfer) {

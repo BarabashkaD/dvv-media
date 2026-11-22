@@ -18,6 +18,7 @@
 #include "dvv/gpu/compute_pipeline.h"
 #include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
