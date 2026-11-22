@@ -23,7 +23,6 @@ namespace {
 using dvv::Errc;
 using dvv::Result;
 using dvv::syncWait;
-using dvv::media::Api;
 namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
@@ -31,6 +30,7 @@ using dvv::media::FrameDesc;
 using dvv::media::FrameKey;
 using dvv::media::FrameStore;
 using dvv::media::FrameStoreOptions;
+using dvv::media::HOST_PLANES;
 using dvv::media::LayoutPolicy;
 using dvv::media::MemKind;
 using dvv::media::OriginId;
@@ -48,11 +48,11 @@ using dvv::media::test::StoreTest;
 constexpr Domain STAGING{MemKind::HostVisible};
 constexpr Domain DEVICE{MemKind::DeviceLocal};
 constexpr StateKey ON_STAGING{
-    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible};
+    .unpacked = false, .binding = vulkan::BUFFER, .kind = MemKind::HostVisible};
 constexpr StateKey ON_DEVICE{
-    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::DeviceLocal};
+    .unpacked = false, .binding = vulkan::BUFFER, .kind = MemKind::DeviceLocal};
 constexpr StateKey DEVICE_PLANES{
-    .unpacked = true, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal};
+    .unpacked = true, .binding = vulkan::IMAGE, .kind = MemKind::DeviceLocal};
 
 bool contains(const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
@@ -123,7 +123,7 @@ TEST_SUITE("store") {
             CHECK(lease->fidelity() == Fidelity::Derived);
             CHECK(lease->view().format == dvv::media::displayFormat());
             CHECK(lease->view().colour == dvv::media::displayColour());
-            CHECK(lease->view().api == vulkan::IMAGE);
+            CHECK(lease->view().binding == vulkan::IMAGE);
             CHECK(lease->view().domain == DEVICE);
         }
         CHECK(source->produced.load() == 1);
@@ -181,7 +181,7 @@ TEST_SUITE("store") {
         const ViewSpec planes{.format = dvv::media::unpackedFormat(desc.format),
                               .colour = dvv::media::displayColour(),
                               .layout = LayoutPolicy::Any,
-                              .api = vulkan::IMAGE,
+                              .binding = vulkan::IMAGE,
                               .domain = DEVICE};
         const Result<ReadLease> other = syncWait(store->acquire({origin, 0}, planes, *requester));
         REQUIRE_FALSE(other.has_value());
@@ -221,7 +221,7 @@ TEST_SUITE("store") {
             store->attach(std::make_shared<PackedSource>(display, 1, 11)).value();
         const auto read =
             syncWait(store->acquireOriginal({origin, 0},
-                                            {.api = Api::HostPlanes,
+                                            {.binding = HOST_PLANES,
                                              .domain = store->hostDomain(),
                                              .fidelity = dvv::media::OriginalFidelity::Exact},
                                             *requester));

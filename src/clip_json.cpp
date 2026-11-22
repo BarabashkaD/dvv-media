@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "dvv/base/json.h"
+#include "dvv/base/paths.h"
 #include "dvv/base/utf8.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/pixel_format.h"
@@ -109,8 +110,7 @@ private:
 [[nodiscard]] std::string anchored(std::string_view at_path, std::string_view clip_path) {
     std::string path(at_path);
     std::ranges::replace(path, '\\', '/');
-    const bool drive = path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) != 0 &&
-                       path[1] == ':' && path[2] == '/';
+    const bool drive = path.size() >= 3 && dvv::isDriveLetterPath(path) && path[2] == '/';
     if (path.starts_with('/') || drive) {
         return "@" + path;
     }

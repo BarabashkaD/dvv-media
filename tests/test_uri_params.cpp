@@ -27,6 +27,11 @@ dvv::Uri uri(std::string_view text) {
     return parsed.value_or(dvv::Uri{});
 }
 
+dvv::Result<media::ColourParams> colourOf(const dvv::Uri& u) {
+    return media::colourSpecFromQuery(u).transform(
+        [](const media::ColourSpec& s) { return media::merged(s); });
+}
+
 }  // namespace
 
 TEST_CASE("uri params: parseSize reads WxH") {
@@ -93,8 +98,8 @@ TEST_CASE("uri params: parseDimension and parseUnsigned name the parameter") {
     CHECK(negative.error().message.starts_with("bad frames "));
 }
 
-TEST_CASE("uri params: colourFromQuery reads colour= and range=") {
-    const auto colour = media::colourFromQuery(uri("synthetic:x?range=full&colour=bt2020"));
+TEST_CASE("uri params: colour= and range= through colourSpecFromQuery") {
+    const auto colour = colourOf(uri("synthetic:x?range=full&colour=bt2020"));
     CHECK(colour.has_value());
     if (colour) {
         CHECK(*colour == media::ColourParams{.matrix = media::ColourMatrix::Bt2020Ncl,
@@ -104,9 +109,9 @@ TEST_CASE("uri params: colourFromQuery reads colour= and range=") {
                                              .kr = 0,
                                              .kb = 0});
     }
-    CHECK(media::colourFromQuery(uri("synthetic:x")) == media::ColourParams{});
+    CHECK(colourOf(uri("synthetic:x")) == media::ColourParams{});
 
-    const auto wide = media::colourFromQuery(uri("synthetic:x?range=wide"));
+    const auto wide = colourOf(uri("synthetic:x?range=wide"));
     REQUIRE_FALSE(wide.has_value());
     CHECK(wide.error().code == dvv::Errc::Format);
     CHECK(wide.error().message == "bad range 'wide' (full, limited)");
@@ -116,8 +121,7 @@ TEST_CASE("uri params: colour= gives the standard; range= goes with every token"
     using Parameters = std::vector<std::pair<std::string, std::string>>;
     for (const media::ColourPresetInfo& info : media::colourPresets()) {
         CAPTURE(info.uriName);
-        const auto colour =
-            media::colourFromQuery(uri("synthetic:x?colour=" + std::string(info.uriName)));
+        const auto colour = colourOf(uri("synthetic:x?colour=" + std::string(info.uriName)));
         CHECK(colour.has_value());
         // The standard's fields but its range: the range comes only from range= (D5R §1.3).
         media::ColourParams expected = info.colour;

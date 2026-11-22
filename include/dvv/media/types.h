@@ -4,12 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <string>
 #include <string_view>
 
 #include "dvv/base/error.h"
-#include "dvv/base/utf8.h"
 #include "dvv/gpu/device_id.h"
 
 namespace dvv::media {
@@ -43,12 +40,20 @@ struct FrameDesc {
     bool operator==(const FrameDesc&) const = default;
 };
 
-// Deprecated (removed in 1.0.0): Api::VkBuffer and Api::VkImage; use vulkan::BUFFER /
-// vulkan::IMAGE from frame_vulkan.h.
-enum class Api : std::uint8_t { HostPlanes, VkBuffer, VkImage };  // VkBuffer, VkImage deprecated
-// The 1.0.0 name (an open set there); Api stays its alias. Compare with == only: do not switch on
-// it, cast it or hash it; it becomes a class in 1.0.0.
-using BindingKind = Api;
+// The kind of a view's binding. The kinds dvv-media defines: HOST_PLANES here, vulkan::BUFFER and
+// vulkan::IMAGE in dvv/media/frame_vulkan.h. Two kinds are equal when their names are equal.
+class BindingKind {
+public:
+    explicit consteval BindingKind(std::string_view name) noexcept : name_(name) {}
+    [[nodiscard]] constexpr std::string_view name() const noexcept { return name_; }  // messages
+    friend constexpr bool operator==(const BindingKind&, const BindingKind&) noexcept = default;
+
+private:
+    std::string_view name_;
+};
+// Read-only host bytes per plane (HostPlanesB).
+inline constexpr BindingKind HOST_PLANES{"HostPlanes"};
+
 enum class MemKind : std::uint8_t { Host, HostVisible, DeviceLocal };
 struct Domain {
     MemKind kind = MemKind::Host;
@@ -56,19 +61,16 @@ struct Domain {
     gpu::DeviceGeneration generation{};
     bool operator==(const Domain&) const = default;
 };
-// Deprecated (removed in 1.0.0): LayoutPolicy::VkOptimal; use Opaque.
 enum class LayoutPolicy : std::uint8_t {
     Any,
     Tight,
-    RowAlign256,
-    VkOptimal,           // VkOptimal deprecated
-    Opaque = VkOptimal,  // a backend-defined layout the host does not address
+    Opaque,  // a backend-defined layout the host does not address
 };
 struct ViewSpec {
     FormatId format = 0;
     ColourId colour = 0;
     LayoutPolicy layout = LayoutPolicy::Any;
-    Api api = Api::HostPlanes;
+    BindingKind binding = HOST_PLANES;
     Domain domain{};
     std::uint8_t downscaleLog2 = 0;
     bool operator==(const ViewSpec&) const = default;
@@ -106,15 +108,5 @@ struct ColourParams {
 // A stable reference (entries are never moved or removed). An unknown id gives the parameters of
 // id 0 (all Unspecified).
 [[nodiscard]] const ColourParams& colourParams(ColourId id) noexcept;
-
-// Deprecated (removed in 1.0.0): use dvv::pathFromText.
-[[nodiscard]] inline std::filesystem::path pathFromUtf8(std::string_view utf8) {
-    return dvv::pathFromText(utf8);
-}
-// Deprecated (removed in 1.0.0): use dvv::pathText (names the file again) or
-// dvv::pathDisplayText (shown text).
-[[nodiscard]] inline std::string utf8FromPath(const std::filesystem::path& path) {
-    return dvv::pathText(path);
-}
 
 }  // namespace dvv::media

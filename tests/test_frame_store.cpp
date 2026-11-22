@@ -44,7 +44,7 @@ using dvv::Result;
 using dvv::syncWait;
 using dvv::Task;
 using dvv::whenAll;
-using dvv::media::Api;
+using dvv::media::BindingKind;
 namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
@@ -52,6 +52,7 @@ using dvv::media::FormatId;
 using dvv::media::FrameDesc;
 using dvv::media::FrameKey;
 using dvv::media::FrameStore;
+using dvv::media::HOST_PLANES;
 using dvv::media::HostPlanesB;
 using dvv::media::LayoutPolicy;
 using dvv::media::Lease;
@@ -126,15 +127,15 @@ std::unique_ptr<FakeConverter> makeUnpack(Gate* gate = nullptr, std::size_t outp
     return std::make_unique<FakeConverter>(FakeConverter::Config{
         .name = "Unpack",
         .from = dvv::media::detail::PRODUCED,
-        .to = {.unpacked = true, .api = Api::HostPlanes, .kind = dvv::media::MemKind::Host},
+        .to = {.unpacked = true, .binding = HOST_PLANES, .kind = dvv::media::MemKind::Host},
         .fidelity = dvv::media::Fidelity::Lossless,
         .gate = gate,
         .outputBytes = output_bytes});
 }
 
 constexpr StateKey P = dvv::media::detail::PRODUCED;
-constexpr StateKey X{.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::Host};
-constexpr StateKey U{.unpacked = true, .api = vulkan::BUFFER, .kind = MemKind::Host};
+constexpr StateKey X{.unpacked = false, .binding = vulkan::BUFFER, .kind = MemKind::Host};
+constexpr StateKey U{.unpacked = true, .binding = vulkan::BUFFER, .kind = MemKind::Host};
 
 std::unique_ptr<FakeConverter> makeConverter(std::string name, StateKey from, StateKey to,
                                              Fidelity fidelity, double cost,
@@ -180,8 +181,8 @@ std::optional<std::uint32_t> rootReaders(FrameStore& store, const FrameKey& key)
 }
 
 // A view of the frame's own format and colour.
-ViewSpec viewOf(FormatId format, Api api, Domain domain) {
-    return ViewSpec{format, 0, LayoutPolicy::Any, api, domain, 0};
+ViewSpec viewOf(FormatId format, BindingKind binding, Domain domain) {
+    return ViewSpec{format, 0, LayoutPolicy::Any, binding, domain, 0};
 }
 
 // The bytes the fake source allocates for one frame (gray 16x8).
@@ -480,7 +481,7 @@ TEST_SUITE("store") {
 
     TEST_CASE_FIXTURE(StoreTest, "adopt inserts an original; a second adopt is Internal") {
         const auto store = makeStore();
-        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, Api::HostPlanes, {}, 0};
+        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, HOST_PLANES, {}, 0};
         const std::vector<std::byte> payload(128, std::byte{7});
         const FrameKey adopted_key{77, 0};
         const Result<ReadLease> adopted = store->adopt(
@@ -747,7 +748,7 @@ TEST_SUITE("store") {
         const OriginId origin = store->attach(source).value();
         const ReadLease lease = take(*store, {origin, 0}, hostView, *requester);
         REQUIRE(lease.planes() != nullptr);
-        CHECK(lease.planes() == dvv::media::bindingIf<HostPlanesB>(lease.binding()));
+        CHECK(lease.planes() == lease.binding().planes());
         CHECK(ReadLease{}.planes() == nullptr);
         CHECK(PinLease{}.planes() == nullptr);
     }
@@ -848,7 +849,8 @@ TEST_SUITE("store") {
         CHECK(source->produced.load() == 0);
     }
 
-    TEST_CASE_FIXTURE(StoreTest, "the shared layout value prints as Opaque") {
+    TEST_CASE_FIXTURE(StoreTest,
+                      "a no-path error names the Opaque layout and the HostPlanes binding") {
         const auto store = makeStore();
         const auto source = makeSource();
         const OriginId origin = store->attach(source).value();
@@ -860,7 +862,7 @@ TEST_SUITE("store") {
         const std::string message = result.error().message;
         CHECK(contains(message, "no converter path from"));
         CHECK(contains(message, "Opaque"));
-        CHECK_FALSE(contains(message, "VkOptimal"));
+        CHECK(contains(message, "(HostPlanes, Host, Opaque)"));
     }
 
     TEST_CASE_FIXTURE(StoreTest, "Produce then one converter, single flight") {
@@ -1098,10 +1100,10 @@ TEST_SUITE("store") {
 
     TEST_CASE_FIXTURE(StoreTest, "a domain the store does not have is Unsupported") {
         // A converter into a memory kind the host-only store has no tier for is not registered.
-        const auto store = makeStore(listOf(
-            makeConverter("ToStaging", P,
-                          {.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible},
-                          Fidelity::Exact, 1)));
+        const auto store = makeStore(listOf(makeConverter(
+            "ToStaging", P,
+            {.unpacked = false, .binding = vulkan::BUFFER, .kind = MemKind::HostVisible},
+            Fidelity::Exact, 1)));
         REQUIRE(store->stats().converters.size() == 1);
         CHECK(store->stats().converters[0].name == "Produce");
         const auto source = makeSource();
@@ -1124,9 +1126,10 @@ TEST_SUITE("store") {
     TEST_CASE_FIXTURE(StoreTest, "a multi-step plan publishes every step and accounts every tier") {
         const Domain staging{MemKind::HostVisible};
         const Domain device{MemKind::DeviceLocal};
-        const StateKey on_staging{.unpacked = false, .api = vulkan::BUFFER, .kind = staging.kind};
-        const StateKey on_device{.unpacked = false, .api = vulkan::BUFFER, .kind = device.kind};
-        const StateKey image{.unpacked = true, .api = vulkan::IMAGE, .kind = device.kind};
+        const StateKey on_staging{
+            .unpacked = false, .binding = vulkan::BUFFER, .kind = staging.kind};
+        const StateKey on_device{.unpacked = false, .binding = vulkan::BUFFER, .kind = device.kind};
+        const StateKey image{.unpacked = true, .binding = vulkan::IMAGE, .kind = device.kind};
         const auto store =
             makeStore(listOf(makeConverter("ToStaging", P, on_staging, Fidelity::Exact, 1),
                              makeConverter("Upload", on_staging, on_device, Fidelity::Exact, 2),
@@ -1162,9 +1165,10 @@ TEST_SUITE("store") {
     TEST_CASE_FIXTURE(StoreTest, "maxPlanDepth bounds the plan") {
         const Domain staging{MemKind::HostVisible};
         const Domain device{MemKind::DeviceLocal};
-        const StateKey on_staging{.unpacked = false, .api = vulkan::BUFFER, .kind = staging.kind};
-        const StateKey on_device{.unpacked = false, .api = vulkan::BUFFER, .kind = device.kind};
-        const StateKey image{.unpacked = true, .api = vulkan::IMAGE, .kind = device.kind};
+        const StateKey on_staging{
+            .unpacked = false, .binding = vulkan::BUFFER, .kind = staging.kind};
+        const StateKey on_device{.unpacked = false, .binding = vulkan::BUFFER, .kind = device.kind};
+        const StateKey image{.unpacked = true, .binding = vulkan::IMAGE, .kind = device.kind};
         const auto store =
             makeStore(listOf(makeConverter("ToStaging", P, on_staging, Fidelity::Exact, 1),
                              makeConverter("Upload", on_staging, on_device, Fidelity::Exact, 2),
@@ -1222,7 +1226,7 @@ TEST_SUITE("store") {
         const auto views = StoreAccess::views(*store, {origin, 0});
         std::vector<Fidelity> x_views;
         for (const auto& [view, fidelity] : views) {
-            if (view.format == desc.format && view.api == vulkan::BUFFER) {
+            if (view.format == desc.format && view.binding == vulkan::BUFFER) {
                 x_views.push_back(fidelity);
             }
         }
@@ -1231,7 +1235,7 @@ TEST_SUITE("store") {
     }
 
     TEST_CASE_FIXTURE(StoreTest, "the planner prefers Lossless over a cheaper Derived converter") {
-        const StateKey planes = {.unpacked = true, .api = Api::HostPlanes, .kind = MemKind::Host};
+        const StateKey planes = {.unpacked = true, .binding = HOST_PLANES, .kind = MemKind::Host};
         {
             auto lossy = makeConverter("Lossy", P, planes, Fidelity::Derived, 1);
             auto unpack = makeConverter("Unpack", P, planes, Fidelity::Lossless, 4);
@@ -1330,7 +1334,7 @@ TEST_SUITE("store") {
         static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
         static_cast<void>(take(*store, {origin, 1}, hostView, *requester));
         CHECK(store->stats().tiers[0].bytes == 256);
-        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, Api::HostPlanes, {}, 0};
+        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, HOST_PLANES, {}, 0};
         auto frame = TestAuthority::makeShared<FakeFrame>(
             desc, std::vector<ViewSpec>{tight}, std::vector<std::byte>(128, std::byte{7}));
         const Result<ReadLease> adopted = store->adopt({77, 0}, std::move(frame));
@@ -1444,9 +1448,9 @@ TEST_SUITE("store") {
         tight.layout = LayoutPolicy::Tight;
         static_cast<void>(take(*store, {origin, 0}, tight, *requester));
         CHECK(store->stats().hits == hits + 1);
-        ViewSpec aligned = hostView;
-        aligned.layout = LayoutPolicy::RowAlign256;
-        const Result<ReadLease> result = syncWait(store->acquire({origin, 0}, aligned, *requester));
+        ViewSpec opaque = hostView;
+        opaque.layout = LayoutPolicy::Opaque;
+        const Result<ReadLease> result = syncWait(store->acquire({origin, 0}, opaque, *requester));
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == Errc::Unsupported);
         CHECK(StoreAccess::noPathCount(*store) == 1);
@@ -1704,8 +1708,8 @@ TEST_SUITE("store") {
             SUBCASE(std::format("{} {}", index, converter.name()).c_str()) {
                 const StateKey to = converter.to();
                 REQUIRE(to.kind == MemKind::Host);
-                const ViewSpec want = viewOf(to.unpacked ? planesView.format : desc.format, to.api,
-                                             store->hostDomain());
+                const ViewSpec want = viewOf(to.unpacked ? planesView.format : desc.format,
+                                             to.binding, store->hostDomain());
                 const FrameKey key{origin, static_cast<std::int64_t>(index)};
                 const ReadLease lease = take(*store, key, want, *requester);
                 const std::optional<std::size_t> bytes =

@@ -13,7 +13,6 @@
 #include <iterator>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,16 +69,6 @@ Result<detail::Pattern> parsePattern(std::string_view name) {
                      std::format("unknown synthetic pattern '{}' (gradient, noise)", name));
 }
 
-// A catalogue format by name: unpacked and custom formats are interned only on use, so accepting
-// them would make the same URI open or fail depending on the process's history.
-Result<FormatId> parseFormat(std::string_view name) {
-    const std::optional<FormatId> format = findFormat(name);
-    if (!format || std::ranges::find(catalogue(), *format) == catalogue().end()) {
-        return makeError(Errc::Format, std::format("unknown pixel format '{}'", name));
-    }
-    return *format;
-}
-
 Result<Parsed> parse(const Uri& uri) {
     DVV_TRY_VOID(detail::checkParameters(uri, ALLOWED));
     Parsed parsed;
@@ -89,7 +78,7 @@ Result<Parsed> parse(const Uri& uri) {
     if (!fmt) {
         return makeError(Errc::Format, "synthetic source needs fmt");
     }
-    DVV_TRY(const FormatId format, parseFormat(*fmt));
+    DVV_TRY(const FormatId format, detail::parseFormat(*fmt));
     DVV_TRY(const auto size, detail::sizeFromQuery(uri));
     if (!size) {
         return makeError(Errc::Format, "synthetic source needs size=WxH or w= and h=");

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(dvv_media VERSION 0.2.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
+project(dvv_media VERSION 0.3.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label (user decision U-M4ORDER).
 set(dvv_media_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -84,7 +84,7 @@ install(EXPORT dvv_mediaTargets NAMESPACE dvv:: DESTINATION ${config_dir})
 configure_package_config_file(cmake/dvv_mediaConfig.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/dvv_mediaConfig.cmake INSTALL_DESTINATION ${config_dir})
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/dvv_mediaConfigVersion.cmake
-    COMPATIBILITY SameMajorVersion)
+    COMPATIBILITY SameMinorVersion)
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/dvv_mediaConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/dvv_mediaConfigVersion.cmake

@@ -101,11 +101,11 @@ TEST_SUITE("display") {
         CHECK(media::displayView(domain) == media::ViewSpec{.format = format,
                                                             .colour = media::displayColour(),
                                                             .layout = media::LayoutPolicy::Any,
-                                                            .api = media::vulkan::IMAGE,
+                                                            .binding = media::vulkan::IMAGE,
                                                             .domain = domain,
                                                             .downscaleLog2 = 0});
         CHECK(media::unpackedFormat(format) == format);
-        CHECK_FALSE(media::isUnpacked(format));
+        CHECK_FALSE(media::formatDesc(format).name.ends_with("@planes"));
         CHECK(media::displayFormat() == format);
         CHECK(media::displayColour() == media::displayColour());
     }

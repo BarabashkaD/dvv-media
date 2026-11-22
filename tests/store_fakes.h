@@ -156,7 +156,7 @@ public:
     mutable std::atomic<int> gateSkips{0};  // that many runs skip the gate
     mutable std::atomic<int> failNext{0};
     mutable std::atomic<Errc> failWith{Errc::Io};
-    mutable std::atomic<bool> wrongView{false};  // the frame's view gets layout RowAlign256
+    mutable std::atomic<bool> wrongView{false};  // the frame's view gets layout Opaque
 
 private:
     Config config_;

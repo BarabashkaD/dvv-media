@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "dvv/base/ascii.h"
 #include "format_table.h"
 #include "math_util.h"
 
@@ -71,8 +72,8 @@ FormatTable& formatTable() {
 }
 
 [[nodiscard]] bool isNameChar(char ch) noexcept {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-           ch == '_' || ch == '.' || ch == '-';
+    return dvv::isAsciiLetter(ch) || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' ||
+           ch == '-';
 }
 
 // 1..64 bytes of [A-Za-z0-9_.-], optionally followed by exactly "@planes" or "@display".
@@ -403,11 +404,6 @@ FormatId unpackedFormat(FormatId format) {
     table.entries.push_back(std::move(entry));
     owner.unpackedId = id;
     return id;
-}
-
-bool isUnpacked(FormatId format) noexcept {
-    const Entry* entry = formatTable().find(format);
-    return entry != nullptr && entry->unpacked;
 }
 
 Result<FormatId> detail::internCustomFormat(const PixelFormatDesc& descriptor) {

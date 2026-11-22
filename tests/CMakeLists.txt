@@ -51,6 +51,13 @@ set_tests_properties(dvv_media.unit PROPERTIES
 # marks install and consumer tests, which only the full cycle runs (vs2026-small excludes them).
 set_property(TEST dvv_media.unit APPEND PROPERTY LABELS sanity)
 
+# frame.h names no dvv-gpu type: a compile-only target of its own (its enums would clash with the
+# dvv-gpu classes the test executables see); every test build compiles it.
+add_library(dvv_media_frame_h_check OBJECT neutral_headers/frame_h.cpp)
+target_link_libraries(dvv_media_frame_h_check PRIVATE dvv::media)
+dvv_set_compiler_options(dvv_media_frame_h_check)
+add_dependencies(dvv_media_tests dvv_media_frame_h_check)
+
 # The first creation of the unpacked formats races only in a fresh process: the unit tests create
 # them all earlier, so this case has its own executable.
 add_executable(dvv_media_race_tests

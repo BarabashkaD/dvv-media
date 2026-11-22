@@ -94,7 +94,7 @@ public:
     // Hands the frame to the store, which publishes it as the key's pending original when
     // produce() returns. Does not call adopt. Errc::Internal for a null frame, a second publish,
     // a desc that differs, or a frame without the original host view
-    // {desc.format, desc.colour, Tight, HostPlanes, hostDomain()}.
+    // {desc.format, desc.colour, Tight, HOST_PLANES, hostDomain()}.
     [[nodiscard]] Result<FrameRef> publish(std::shared_ptr<IFrame> frame);
 
 private:

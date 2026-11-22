@@ -20,6 +20,7 @@
 #include "dvv/base/error.h"
 #include "dvv/gpu/command_recorder.h"
 #include "dvv/gpu/compute_pipeline.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/reference.h"

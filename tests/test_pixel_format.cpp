@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -266,8 +265,6 @@ TEST_CASE("unpacked formats") {
         CAPTURE(source.name);
         const media::FormatId unpacked = media::unpackedFormat(format);
         CHECK(unpacked != format);
-        CHECK(media::isUnpacked(unpacked));
-        CHECK_FALSE(media::isUnpacked(format));
         CHECK(media::unpackedFormat(unpacked) == unpacked);
         CHECK(media::unpackedFormat(format) == unpacked);
 
@@ -296,19 +293,10 @@ TEST_CASE("unpacked formats") {
     CHECK(media::formatDesc(media::unpackedFormat(idOf("gbrp"))).planes[0].slots[0].component == 0);
 }
 
-TEST_CASE("pixel format: the new names are the old ones") {
-    static_assert(std::is_same_v<media::PixelFormatDescriptor, media::PixelFormatDesc>);
-    const media::FormatId id = idOf("yuv420p");
-    CHECK(&media::descriptor(id) == &media::formatDesc(id));
-    constexpr media::FormatId MAX_ID = 0xFFFFFFFF;
-    CHECK(&media::descriptor(MAX_ID) == &media::formatDesc(MAX_ID));
-    CHECK(media::formatDesc(MAX_ID).name.empty());
-}
-
 TEST_CASE("unknown ids") {
+    CHECK(media::formatDesc(0xFFFFFFFF).name.empty());
     CHECK(media::formatDesc(UNKNOWN_ID).name.empty());
     CHECK(media::formatDesc(UNKNOWN_ID).planeCount == 0);
-    CHECK_FALSE(media::isUnpacked(UNKNOWN_ID));
     CHECK(media::unpackedFormat(UNKNOWN_ID) == UNKNOWN_ID);
 }
 

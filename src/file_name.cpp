@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "dvv/base/paths.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/rate_size_text.h"
@@ -109,9 +110,7 @@ std::optional<FileNameInfo> parseName(std::string_view name) {
 }  // namespace
 
 std::optional<FileNameInfo> parseFileName(std::string_view utf8_path) {
-    const std::size_t separator = utf8_path.find_last_of("/\\");
-    const std::string_view name =
-        separator == std::string_view::npos ? utf8_path : utf8_path.substr(separator + 1);
+    const std::string_view name = dvv::baseNameOf(utf8_path);
     if (auto info = parseName(name)) {
         return info;
     }

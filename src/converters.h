@@ -20,22 +20,22 @@ class FrameStore;
 
 namespace dvv::media::detail {
 
-// A graph state: the original format or its unpacked form, the API and the memory kind; with
-// `display` the display format and colour (M3 D6) instead of the frame's format and colour.
+// A graph state: the original format or its unpacked form, the binding kind and the memory kind;
+// with `display` the display format and colour (M3 D6) instead of the frame's format and colour.
 // `display` is the last member, so positional initialisers of the M2 states stay valid.
 struct StateKey {
     bool unpacked = false;
-    Api api = Api::HostPlanes;
+    BindingKind binding = HOST_PLANES;
     MemKind kind = MemKind::Host;
     bool display = false;
     bool operator==(const StateKey&) const = default;
 };
 // What Produce makes: the original, as host planes in host memory.
 inline constexpr StateKey PRODUCED{
-    .unpacked = false, .api = Api::HostPlanes, .kind = MemKind::Host};
+    .unpacked = false, .binding = HOST_PLANES, .kind = MemKind::Host};
 // What ToDisplay makes: the display image in device memory (displayFormat(), displayColour()).
 inline constexpr StateKey DISPLAY_STATE{
-    .unpacked = false, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal, .display = true};
+    .unpacked = false, .binding = vulkan::IMAGE, .kind = MemKind::DeviceLocal, .display = true};
 
 struct ConvertInput {
     const FrameKey& key;     // the key being converted

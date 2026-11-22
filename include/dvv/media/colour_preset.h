@@ -31,9 +31,6 @@ struct ColourPresetInfo {
 [[nodiscard]] std::optional<ColourPreset> findColourPreset(std::string_view uri_name) noexcept;
 // The table row of `preset`; a value outside the enum gives the bt601-ntsc row.
 [[nodiscard]] const ColourPresetInfo& colourPresetInfo(ColourPreset preset) noexcept;
-// The standard whose four fields all equal those of `colour` (kr and kb are not compared), or
-// nullopt.
-[[nodiscard]] std::optional<ColourPreset> matchColourPreset(const ColourParams& colour) noexcept;
 // The standard luma weights {Kr, Kb} of a matrix; nullopt for Rgb, Custom and Unspecified.
 [[nodiscard]] std::optional<std::array<float, 2>> standardWeights(ColourMatrix matrix) noexcept;
 

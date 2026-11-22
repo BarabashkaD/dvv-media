@@ -66,7 +66,7 @@ TEST_CASE("concurrent first creation of unpacked formats") {
         for (std::size_t t = 1; t < THREADS; ++t) {
             CHECK(results[t][id] == expected);
         }
-        CHECK(media::isUnpacked(expected));
+        CHECK(media::unpackedFormat(expected) == expected);
         CHECK(media::findFormat(unpackedName(static_cast<media::FormatId>(id))) == expected);
         CHECK(media::unpackedFormat(static_cast<media::FormatId>(id)) == expected);
         ids.insert(expected);

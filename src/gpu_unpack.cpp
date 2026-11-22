@@ -13,17 +13,9 @@
 
 #include "dvv/base/json.h"
 #include "dvv_media_shaders/unpack.h"
+#include "image_format_name.h"
 
 namespace dvv::media::detail {
-
-namespace {
-
-// The name of an unpacked image format, for messages.
-const char* imageFormatName(VkFormat format) noexcept {
-    return format == VK_FORMAT_R8_UINT ? "R8_UINT" : "R16_UINT";
-}
-
-}  // namespace
 
 Result<std::uint64_t> reflectedPushSize(std::string_view reflection_json, std::string_view shader) {
     DVV_TRY(const json::Value reflection, json::parse(reflection_json));

@@ -105,14 +105,6 @@ const ColourPresetInfo& colourPresetInfo(ColourPreset preset) noexcept {
     return index < PRESETS.size() ? PRESETS[index] : PRESETS.front();
 }
 
-std::optional<ColourPreset> matchColourPreset(const ColourParams& colour) noexcept {
-    const auto found = std::ranges::find_if(PRESETS, [&](const ColourPresetInfo& info) {
-        return info.colour.matrix == colour.matrix && info.colour.range == colour.range &&
-               info.colour.transfer == colour.transfer && info.colour.primaries == colour.primaries;
-    });
-    return found == PRESETS.end() ? std::nullopt : std::optional(found->id);
-}
-
 std::optional<std::array<float, 2>> standardWeights(ColourMatrix matrix) noexcept {
     switch (matrix) {
         case ColourMatrix::Bt601: return std::array{0.299f, 0.114f};

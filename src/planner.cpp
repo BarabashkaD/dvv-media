@@ -171,8 +171,9 @@ struct Ending {
 }  // namespace
 
 bool satisfies(const ViewSpec& view, const ViewSpec& want) noexcept {
-    return view.format == want.format && view.colour == want.colour && view.api == want.api &&
-           view.domain == want.domain && view.downscaleLog2 == want.downscaleLog2 &&
+    return view.format == want.format && view.colour == want.colour &&
+           view.binding == want.binding && view.domain == want.domain &&
+           view.downscaleLog2 == want.downscaleLog2 &&
            (want.layout == LayoutPolicy::Any || view.layout == want.layout);
 }
 

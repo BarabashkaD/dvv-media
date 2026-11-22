@@ -19,12 +19,12 @@
 
 namespace {
 
-using dvv::media::Api;
 namespace vulkan = dvv::media::vulkan;
 using dvv::media::Domain;
 using dvv::media::Fidelity;
 using dvv::media::FormatId;
 using dvv::media::FrameDesc;
+using dvv::media::HOST_PLANES;
 using dvv::media::LayoutPolicy;
 using dvv::media::MemKind;
 using dvv::media::ViewSpec;
@@ -37,8 +37,8 @@ using dvv::media::detail::StateKey;
 using dvv::media::test::FakeConverter;
 
 constexpr StateKey P = dvv::media::detail::PRODUCED;
-constexpr StateKey X{.unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::Host};
-constexpr StateKey T{.unpacked = true, .api = Api::HostPlanes, .kind = MemKind::Host};
+constexpr StateKey X{.unpacked = false, .binding = vulkan::BUFFER, .kind = MemKind::Host};
+constexpr StateKey T{.unpacked = true, .binding = HOST_PLANES, .kind = MemKind::Host};
 
 FakeConverter converter(std::string name, StateKey from, StateKey to, double cost,
                         Fidelity fidelity = Fidelity::Lossless,
@@ -152,7 +152,8 @@ TEST_SUITE("planner") {
               std::vector<const Converter*>{&q2});
         CHECK(stepsOf(find(sources, converters, T, LayoutPolicy::Any, 4)) ==
               std::vector<const Converter*>{&q1});
-        CHECK_FALSE(find(sources, converters, T, LayoutPolicy::RowAlign256, 4).has_value());
+        const std::array<const Converter*, 1> tight_only{&q1};
+        CHECK_FALSE(find(sources, tight_only, T, LayoutPolicy::Opaque, 4).has_value());
     }
 
     TEST_CASE("a source at the target is a zero-step path") {
@@ -166,7 +167,7 @@ TEST_SUITE("planner") {
 
     TEST_CASE("selectEntry ranks fidelity, then published over pending") {
         const FrameDesc desc = grayDesc();
-        const ViewSpec host_view{desc.format, 0, LayoutPolicy::Any, Api::HostPlanes, Domain{}, 0};
+        const ViewSpec host_view{desc.format, 0, LayoutPolicy::Any, HOST_PLANES, Domain{}, 0};
         ViewSpec planes_view = host_view;
         planes_view.format = dvv::media::unpackedFormat(desc.format);
 

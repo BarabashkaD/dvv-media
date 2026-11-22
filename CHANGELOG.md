@@ -2,9 +2,53 @@
 
 All notable changes to dvv-media. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning with
-the dvv rules: compatible = the same major and at least the minimum version, also for 0.x; breaking
-changes only in a new major, after a deprecation. This file is the release notes (there are no
-GitHub Releases).
+the dvv rules: compatible = the same 0.minor and at least the minimum version; a replaced or
+unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
+notes (there are no GitHub Releases).
+
+## [0.3.0] - 2026-11-22
+
+### Added
+- `Binding::planes()` and `Binding::kind()`; `vulkan::bufferBinding`, `vulkan::imageBinding`,
+  `vulkan::buffer(binding)`, `vulkan::image(binding, plane)` and `vulkan::imageCount(binding)` in
+  `dvv/media/frame_vulkan.h`.
+- `HOST_PLANES` and `BindingKind::name()`.
+
+### Changed
+- Requires dvv-build 0.6.0, dvv-base 0.6.0, dvv-registry 0.3.0, dvv-platform 0.4.0 and
+  dvv-gpu 0.4.0.
+- `BindingKind` is a class of named constants: `HOST_PLANES`, `vulkan::BUFFER` and
+  `vulkan::IMAGE`. Compare it with `==`.
+- `ViewSpec::api` and `OriginalRequest::api` are named `binding`; `originalView` and `planesView`
+  take a `BindingKind`.
+- `Binding` is a class: `planes()` reads host planes, the `vulkan::` functions read and make GPU
+  bindings. `dvv/media/frame.h` names no dvv-gpu type and no longer includes `dvv/gpu/gpu_fwd.h`.
+- The CPU side of the display transform (`toDisplayReference`, `srgbEncode`, `srgbDecode`,
+  `encodeSrgb8`, `floatToHalf`, `halfToFloat`) is documented in the README.
+- The package is compatible within the same 0.minor (`SameMinorVersion`).
+
+### Removed
+- `Api` with `Api::VkBuffer` and `Api::VkImage`: use `BindingKind`, `HOST_PLANES`,
+  `vulkan::BUFFER` and `vulkan::IMAGE`.
+- `LayoutPolicy::VkOptimal` (use `LayoutPolicy::Opaque`) and `LayoutPolicy::RowAlign256` (no
+  converter made it).
+- `bindingIf<B>`, `VkBufferB` and `VkImageB`, and reading a `Binding` with `std::get_if`,
+  `std::get`, `std::visit` or `std::holds_alternative`: use `Binding::planes()`, `Lease::planes()`
+  and the `vulkan::` functions.
+- `StagingFrame`, `VkBufferFrame` and `VkPlanesFrame` from the public headers, with
+  `StagingFrame::buffer()`: only the store makes them; `vulkan::buffer(lease)` and
+  `vulkan::image(lease, plane)` reach their resources.
+- `acquireOriginal(key, api, domain, resume_on, require_exact)`: use
+  `acquireOriginal(key, request, resume_on)`. Taking the address of `acquireOriginal` is no longer
+  ambiguous.
+- The `SourceFactory` constructor without the unavailable list.
+- `InterfaceKind<ISourceProvider>`.
+- `PixelFormatDescriptor` and `descriptor(FormatId)`: use `PixelFormatDesc` and `formatDesc`.
+- `pathFromUtf8` and `utf8FromPath`: use `dvv::pathFromText`, `dvv::pathText` or
+  `dvv::pathDisplayText`.
+- `colourFromQuery` (use `merged(colourSpecFromQuery(uri))`), `parseColourMatrix`,
+  `parseTransferFn`, `parsePrimaries`, `matchColourPreset`, `isUnpacked` and
+  `HostFrame::setDataOffset`.
 
 ## [0.2.0] - 2026-11-21
 

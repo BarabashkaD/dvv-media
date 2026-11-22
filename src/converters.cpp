@@ -1,6 +1,5 @@
 #include "converters.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -22,13 +21,17 @@
 #include "dvv/gpu/compute_pipeline.h"
 #include "dvv/gpu/context_vulkan.h"
 #include "dvv/gpu/execution_context.h"
+#include "dvv/gpu/image.h"
 #include "dvv/gpu/resources.h"
+#include "dvv/gpu/submission.h"
 #include "dvv/media/display.h"
 #include "dvv/media/frame.h"
+#include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/reference.h"
 #include "dvv/media/types.h"
 #include "dvv/platform/aligned_buffer.h"
+#include "frames_vulkan.h"
 #include "gpu_unpack.h"
 #include "store_state.h"
 #include "to_display.h"
@@ -39,17 +42,18 @@ namespace {
 
 // The graph states of the M2 converters (§5.3).
 constexpr StateKey HOST_ORIGINAL = PRODUCED;
-constexpr StateKey HOST_PLANES{.unpacked = true, .api = Api::HostPlanes, .kind = MemKind::Host};
+constexpr StateKey HOST_PLANES{
+    .unpacked = true, .binding = media::HOST_PLANES, .kind = MemKind::Host};
 constexpr StateKey STAGING_BUFFER{
-    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::HostVisible};
+    .unpacked = false, .binding = media::vulkan::BUFFER, .kind = MemKind::HostVisible};
 constexpr StateKey STAGING_ORIGINAL{
-    .unpacked = false, .api = Api::HostPlanes, .kind = MemKind::HostVisible};
+    .unpacked = false, .binding = media::HOST_PLANES, .kind = MemKind::HostVisible};
 constexpr StateKey STAGING_PLANES{
-    .unpacked = true, .api = Api::HostPlanes, .kind = MemKind::HostVisible};
+    .unpacked = true, .binding = media::HOST_PLANES, .kind = MemKind::HostVisible};
 constexpr StateKey DEVICE_BUFFER{
-    .unpacked = false, .api = vulkan::BUFFER, .kind = MemKind::DeviceLocal};
+    .unpacked = false, .binding = media::vulkan::BUFFER, .kind = MemKind::DeviceLocal};
 constexpr StateKey DEVICE_PLANES{
-    .unpacked = true, .api = vulkan::IMAGE, .kind = MemKind::DeviceLocal};
+    .unpacked = true, .binding = media::vulkan::IMAGE, .kind = MemKind::DeviceLocal};
 
 // One edge of the graph. The cost is `factor` times the bytes of the input view.
 struct Edge {
@@ -111,7 +115,7 @@ private:
 [[nodiscard]] Result<std::span<const std::byte>> contiguousOriginal(const ConvertInput& input) {
     const FrameDesc& desc = input.desc;
     DVV_TRY(const FrameGeometry layout, geometry(desc.format, desc.width, desc.height));
-    const auto* planes = bindingIf<HostPlanesB>(input.binding);
+    const HostPlanesB* planes = input.binding.planes();
     bool contiguous = planes != nullptr && planes->planeCount == layout.planeCount &&
                       layout.planeCount > 0 && planes->planes[0].data() != nullptr;
     for (std::size_t p = 0; contiguous && p < layout.planeCount; ++p) {
@@ -130,14 +134,15 @@ private:
                                       static_cast<std::size_t>(layout.bytes));
 }
 
-// The buffer binding of the input; Internal without one.
-[[nodiscard]] Result<VkBufferB> bufferOf(const ConvertInput& input, std::string_view converter) {
-    const auto* binding = bindingIf<VkBufferB>(input.binding);
-    if (binding == nullptr || !binding->buffer) {
+// The buffer of the input's binding; Internal without one.
+[[nodiscard]] Result<const gpu::GpuBuffer*> bufferOf(const ConvertInput& input,
+                                                     std::string_view converter) {
+    const gpu::GpuBuffer* buffer = vulkan::buffer(input.binding);
+    if (buffer == nullptr) {
         return makeError(Errc::Internal, std::format("{}: frame {} of origin {} has no buffer",
                                                      converter, input.key.index, input.key.origin));
     }
-    return *binding;
+    return buffer;
 }
 
 // (original, HostPlanes, Host) -> (unpacked, HostPlanes, Host), and the same from HostVisible
@@ -248,7 +253,7 @@ public:
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
         const FrameDesc& desc = input.desc;
-        const VkBufferB source = co_try(bufferOf(input, name()));
+        co_try(bufferOf(input, name()));
         const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::uint64_t bytes = layout.bytes;
         std::shared_ptr<gpu::GpuBuffer> device =
@@ -257,16 +262,17 @@ public:
                                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                  .memory = gpu::MemoryUsage::DeviceOnly,
                                                  .name = frameName("original", input.key)}));
-        // The record function holds both buffers until the GPU is done (D10).
+        // The record function holds the input binding (its buffer) and the device buffer until the
+        // GPU is done (D10).
         co_try(co_await gpu::submit(
-            *context_, *cpu_, [source, device, bytes](gpu::CommandRecorder& recorder) {
+            *context_, *cpu_,
+            [binding = input.binding, device, bytes](gpu::CommandRecorder& recorder) {
                 recorder.copyBuffer(
-                    *source.buffer, *device,
-                    gpu::BufferCopy{
-                        .sourceOffset = source.offset, .destinationOffset = 0, .size = bytes});
+                    *vulkan::buffer(binding), *device,
+                    gpu::BufferCopy{.sourceOffset = 0, .destinationOffset = 0, .size = bytes});
             }));
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<VkBufferFrame>(
-            context.store, desc, context.output.domain, std::move(device), layout));
+            context.store, desc, context.output.domain, std::move(device)));
     }
 
 private:
@@ -299,7 +305,7 @@ public:
                                                             ConvertContext context) const override {
         const FrameDesc desc = given.desc;
         const FormatId unpacked = unpackedFormat(desc.format);
-        const VkBufferB input = co_try(bufferOf(given, name()));
+        co_try(bufferOf(given, name()));
         const PixelFormatDesc& d = formatDesc(desc.format);
         std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
         for (std::size_t c = 0; c < d.componentCount; ++c) {
@@ -315,18 +321,18 @@ public:
         }
         const std::uint8_t count = d.componentCount;
         // recordUnpack's checks fail inside the record function (nothing recorded); the result
-        // is read after the submission completed. The record function holds the input buffer, the
-        // images and the pipeline until the GPU is done (D10).
+        // is read after the submission completed. The record function holds the input binding (its
+        // buffer), the images and the pipeline until the GPU is done (D10).
         auto checked = std::make_shared<Result<void>>();
         co_try(co_await gpu::submit(*context_, *cpu_,
-                                    [pipeline = pipeline_, input, planes, desc, count,
-                                     checked](gpu::CommandRecorder& recorder) {
+                                    [pipeline = pipeline_, binding = given.binding, planes, desc,
+                                     count, checked](gpu::CommandRecorder& recorder) {
                                         std::array<gpu::GpuImage*, MAX_COMPONENTS> targets{};
                                         for (std::size_t c = 0; c < count; ++c) {
                                             targets[c] = planes[c].get();
                                         }
                                         *checked = recordUnpack(
-                                            recorder, *pipeline, *input.buffer, input.offset, desc,
+                                            recorder, *pipeline, *vulkan::buffer(binding), 0, desc,
                                             std::span<gpu::GpuImage* const>(targets).first(count));
                                     }));
         co_try(std::move(*checked));
@@ -363,7 +369,7 @@ public:
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput input,
                                                             ConvertContext context) const override {
         const FrameDesc& desc = input.desc;
-        const VkBufferB source = co_try(bufferOf(input, name()));
+        co_try(bufferOf(input, name()));
         const FrameGeometry layout = co_try(geometry(desc.format, desc.width, desc.height));
         const std::uint64_t bytes = layout.bytes;
         // TRANSFER_SRC too: the frame's VkBuffer view is STAGING_BUFFER, an Upload source.
@@ -373,12 +379,14 @@ public:
                                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                  .memory = gpu::MemoryUsage::HostReadback,
                                                  .name = frameName("readback", input.key)}));
+        // The record function holds the input binding (its buffer) and the host buffer until the
+        // GPU is done (D10).
         co_try(co_await gpu::submit(
-            *context_, *cpu_, [source, host, bytes](gpu::CommandRecorder& recorder) {
+            *context_, *cpu_,
+            [binding = input.binding, host, bytes](gpu::CommandRecorder& recorder) {
                 recorder.copyBuffer(
-                    *source.buffer, *host,
-                    gpu::BufferCopy{
-                        .sourceOffset = source.offset, .destinationOffset = 0, .size = bytes});
+                    *vulkan::buffer(binding), *host,
+                    gpu::BufferCopy{.sourceOffset = 0, .destinationOffset = 0, .size = bytes});
             }));
         gpu::MappedRead read = co_try(host->mapRead());
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<StagingFrame>(
@@ -416,10 +424,9 @@ public:
         const FrameDesc& desc = input.desc;
         const FormatId unpacked = unpackedFormat(desc.format);
         const FrameGeometry layout = co_try(geometry(unpacked, desc.width, desc.height));
-        const auto* images = bindingIf<VkImageB>(input.binding);
-        bool matches = images != nullptr && images->planeCount == layout.planeCount;
+        bool matches = vulkan::imageCount(input.binding) == layout.planeCount;
         for (std::size_t c = 0; matches && c < layout.planeCount; ++c) {
-            const gpu::GpuImage* image = images->planes[c].get();
+            const gpu::GpuImage* image = vulkan::image(input.binding, c);
             const std::uint32_t texel =
                 image != nullptr && gpu::vulkanFormat(*image) == VK_FORMAT_R8_UINT ? 1 : 2;
             matches = image != nullptr && layout.planes[c].stride == image->width() * texel &&
@@ -439,11 +446,15 @@ public:
                                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                                  .memory = gpu::MemoryUsage::HostReadback,
                                                  .name = frameName("readback planes", input.key)}));
+        // The record function holds the input binding (its images) and the host buffer until the
+        // GPU is done (D10).
         co_try(co_await gpu::submit(
-            *context_, *cpu_, [planes = *images, host, layout](gpu::CommandRecorder& recorder) {
+            *context_, *cpu_,
+            [binding = input.binding, host, layout](gpu::CommandRecorder& recorder) {
                 // The images are in GENERAL after the unpack: copied without a transition.
-                for (std::size_t c = 0; c < planes.planeCount; ++c) {
-                    recorder.copyImageToBuffer(*planes.planes[c], *host, layout.planes[c].offset);
+                for (std::size_t c = 0; c < vulkan::imageCount(binding); ++c) {
+                    recorder.copyImageToBuffer(*vulkan::image(binding, c), *host,
+                                               layout.planes[c].offset);
                 }
             }));
         gpu::MappedRead read = co_try(host->mapRead());
@@ -484,13 +495,11 @@ public:
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput given,
                                                             ConvertContext context) const override {
         const FrameDesc desc = given.desc;
-        const auto* images = bindingIf<VkImageB>(given.binding);
-        if (images == nullptr) {
+        if (vulkan::imageCount(given.binding) == 0) {
             co_return makeError(Errc::Internal,
                                 std::format("ToDisplay: frame {} of origin {} has no planes",
                                             given.key.index, given.key.origin));
         }
-        const VkImageB input = *images;
         const ColourParams resolved = resolveColour(desc).params;
         const ToDisplayPush push =
             co_try(toDisplayPush(desc.format, resolved, desc.width, desc.height));
@@ -501,17 +510,17 @@ public:
                         .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                         .name = frameName("display", given.key)}));
         // recordToDisplay's checks fail inside the record function (nothing recorded); the result
-        // is read after the submission completed. The record function holds the planes, the
-        // output, the dummies and the pipeline until the GPU is done (D10).
+        // is read after the submission completed. The record function holds the input binding (the
+        // planes), the output, the dummies and the pipeline until the GPU is done (D10).
         auto checked = std::make_shared<Result<void>>();
         co_try(co_await gpu::submit(
             *context_, *cpu_,
-            [pipeline = pipeline_, input, output, dummies = dummies_, push, desc,
+            [pipeline = pipeline_, binding = given.binding, output, dummies = dummies_, push, desc,
              checked](gpu::CommandRecorder& recorder) {
                 std::array<gpu::GpuImage*, MAX_COMPONENTS> planes{};
-                const std::size_t count = std::min<std::size_t>(input.planeCount, MAX_COMPONENTS);
+                const std::size_t count = vulkan::imageCount(binding);
                 for (std::size_t c = 0; c < count; ++c) {
-                    planes[c] = input.planes[c].get();
+                    planes[c] = vulkan::image(binding, c);
                 }
                 *checked = recordToDisplay(recorder, *pipeline, push, desc.format,
                                            std::span<gpu::GpuImage* const>(planes).first(count),
