@@ -9,7 +9,7 @@ if(DVV_MEDIA_SOURCE_DIR)
     FetchContent_Declare(dvv_media SOURCE_DIR "${DVV_MEDIA_SOURCE_DIR}")
     FetchContent_MakeAvailable(dvv_media)
 else()
-    find_package(dvv_media 0.3 REQUIRED)
+    find_package(dvv_media 0.4 REQUIRED)
 endif()
 if(NOT DVV_CMAKE_DIR)
     message(FATAL_ERROR "dvv_base did not define DVV_CMAKE_DIR")
@@ -21,3 +21,9 @@ target_link_libraries(consumer PRIVATE dvv::media)
 # The built-in source providers (a component library: whole archive, so the registrations survive).
 dvv_link_components(consumer dvv::media_sources)
 dvv_set_compiler_options(consumer)
+# A shader that imports dvv_media.view_lines: the exported sources reach a consumer's shaders.
+add_library(consumer_shaders STATIC)
+dvv_add_shaders(consumer_shaders NAMESPACE consumer_shaders SHADERS lines_import.slang
+    IMPORTS dvv::media)
+dvv_set_compiler_options(consumer_shaders)
+target_link_libraries(consumer PRIVATE consumer_shaders)

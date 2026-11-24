@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(dvv_media VERSION 0.3.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
+project(dvv_media VERSION 0.4.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label (user decision U-M4ORDER).
 set(dvv_media_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -47,7 +47,9 @@ add_library(dvv_media STATIC
     src/sources/uri_params.cpp
     src/to_display.cpp
     src/types.cpp
-    src/uri_colour.cpp)
+    src/uri_colour.cpp
+    src/view.cpp
+    src/view_lines.cpp)
 add_library(dvv::media ALIAS dvv_media)
 set_target_properties(dvv_media PROPERTIES EXPORT_NAME media)
 target_include_directories(dvv_media PUBLIC
@@ -58,10 +60,17 @@ target_link_libraries(dvv_media PUBLIC dvv::base dvv::registry dvv::platform dvv
 # holds the bodies of the public size and rate grammar (dvv/media/rate_size_text.h).
 target_include_directories(dvv_media PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 dvv_set_compiler_options(dvv_media)
+# The line rule rounds after every float operation, as the shader marks it precise: no multiply-add
+# may be fused (GCC fuses across statements by default; MSVC contracts only with /fp:contract).
+set_source_files_properties(src/view_lines.cpp PROPERTIES
+    COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")
 # The GPU unpack shader (M2 design §5.4) and the ToDisplay shader (M3 design D3-D5), embedded as
 # dvv_media_shaders::unpack() and dvv_media_shaders::toDisplay().
 dvv_add_shaders(dvv_media NAMESPACE dvv_media_shaders
     SHADERS shaders/unpack.slang shaders/to_display.slang)
+# The line rule for shaders (dvv/media/view_lines.h): applications' shaders `import
+# dvv_media.view_lines;` with dvv_add_shaders(... IMPORTS dvv::media).
+dvv_export_shader_sources(dvv_media SOURCES shaders/view_lines.slang)
 
 # Built-in source providers (D1): a component library. Consumers link it only with
 # dvv_link_components(<target> dvv::media_sources), so the DVV_REGISTER lines survive linking.
