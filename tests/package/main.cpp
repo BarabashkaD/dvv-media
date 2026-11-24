@@ -5,12 +5,14 @@
 #include <utility>
 #include <vector>
 
+#include "consumer_shaders/lines_import.h"
 #include "dvv/media/display_vulkan.h"
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/rate_size_text.h"
 #include "dvv/media/source_factory.h"
 #include "dvv/media/types.h"
 #include "dvv/media/uri_colour.h"
+#include "dvv/media/view.h"
 #include "dvv/registry/capabilities.h"
 #include "dvv/registry/component_info.h"
 #include "dvv/registry/component_registry.h"
@@ -54,6 +56,12 @@ int main() {
         std::puts("parseSize(1920x1080) differs");
         ok = false;
     }
+    // The view geometry new in 0.4.0 is installed and linked.
+    if (ViewTransform::fit({.width = 211, .height = 97}, {.width = 37, .height = 23}).offset() !=
+        PixelOffset{.x = 27, .y = 0}) {
+        std::puts("ViewTransform::fit(211x97, 37x23).offset() differs");
+        ok = false;
+    }
     // Constant checks are compile-time: a runtime if on constants is C4127 under MSVC /W4.
     static_assert(vulkan::BUFFER != vulkan::IMAGE);
     static_assert(DISPLAY_IMAGE_FORMAT == VK_FORMAT_R16G16B16A16_SFLOAT);
@@ -64,6 +72,11 @@ int main() {
             return status.info.id == "synthetic";
         })) {
         std::puts("the source provider 'synthetic' is not registered");
+        ok = false;
+    }
+    // The consumer's shader that imports dvv_media.view_lines was compiled and embedded.
+    if (consumer_shaders::linesImport().spirv.empty()) {
+        std::puts("the shader importing dvv_media.view_lines is empty");
         ok = false;
     }
     if (!ok) {

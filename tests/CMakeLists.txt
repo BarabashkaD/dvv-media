@@ -10,6 +10,8 @@ add_executable(dvv_media_tests
     neutral_headers/rate_size_text_h.cpp
     neutral_headers/source_h.cpp
     neutral_headers/types_h.cpp
+    neutral_headers/view_h.cpp
+    neutral_headers/view_lines_h.cpp
     store_fakes.cpp
     test_clip_json.cpp
     test_colour_preset.cpp
@@ -32,6 +34,8 @@ add_executable(dvv_media_tests
     test_types.cpp
     test_uri_colour.cpp
     test_uri_params.cpp
+    test_view.cpp
+    test_view_lines.cpp
     test_y4m_source.cpp)
 target_link_libraries(dvv_media_tests PRIVATE dvv::media doctest::doctest)
 # The real source providers, for the conformance case (whole archive: nothing references them).
@@ -41,6 +45,10 @@ target_include_directories(dvv_media_tests PRIVATE ${dvv_media_SOURCE_DIR}/src)
 # doctest otherwise only forward-declares std::ostream, which breaks printing std types.
 target_compile_definitions(dvv_media_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(dvv_media_tests)
+# The line tests restate the line rule's float arithmetic: built without FP contraction like
+# src/view_lines.cpp.
+set_source_files_properties(test_view_lines.cpp PROPERTIES
+    COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")
 add_test(NAME dvv_media.unit COMMAND dvv_media_tests)
 # The timeout turns a hang into a failure long before the CI job limit.
 set_tests_properties(dvv_media.unit PROPERTIES
@@ -103,10 +111,21 @@ if(DVV_SANITIZE STREQUAL "thread")
     list(APPEND gpu_test_environment
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
 endif()
+# The probe of shaders/view_lines.slang, which it imports as the exported module
+# dvv_media.view_lines (the way an application's shaders take it).
+add_library(dvv_media_test_shaders STATIC)
+dvv_add_shaders(dvv_media_test_shaders NAMESPACE media_test_shaders
+    SHADERS shaders/view_lines_probe.slang IMPORTS dvv::media)
+dvv_set_compiler_options(dvv_media_test_shaders)
 add_executable(dvv_media_gpu_tests
     gpu_main.cpp gpu_fixture.cpp gpu_test_store.cpp gpu_test_to_display.cpp gpu_test_unpack.cpp
-    store_fakes.cpp)
-target_link_libraries(dvv_media_gpu_tests PRIVATE dvv::media doctest::doctest)
+    gpu_test_view_lines.cpp store_fakes.cpp)
+target_link_libraries(dvv_media_gpu_tests PRIVATE dvv::media dvv_media_test_shaders
+                                                  doctest::doctest)
+# The comparison restates the line rule's float arithmetic: built without FP contraction like
+# src/view_lines.cpp.
+set_source_files_properties(gpu_test_view_lines.cpp PROPERTIES
+    COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")
 target_include_directories(dvv_media_gpu_tests PRIVATE ${dvv_media_SOURCE_DIR}/src)
 target_compile_definitions(dvv_media_gpu_tests PRIVATE DOCTEST_CONFIG_USE_STD_HEADERS)
 dvv_set_compiler_options(dvv_media_gpu_tests)

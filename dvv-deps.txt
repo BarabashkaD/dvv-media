@@ -3,4 +3,4 @@ dvv-build 0.6.0
 dvv-base 0.6.0
 dvv-registry 0.3.0
 dvv-platform 0.4.0
-dvv-gpu 0.4.0
+dvv-gpu 0.5.0

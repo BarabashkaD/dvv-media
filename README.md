@@ -28,11 +28,11 @@ cmake --workflow --preset vs2026
 On Linux: `./dvv-build/bootstrap.sh`, then `cmake --workflow --preset ninja-clang`.
 Applications use dvv-media as a git submodule in their `libs/` folder, next to dvv-build.
 
-`dvv::media` holds the formats, frames, the store and the factory; the built-in providers are in the
-component library `dvv::media_sources`:
+`dvv::media` holds the formats, frames, the store, the factory and the view geometry; the built-in
+providers are in the component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.3 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.4 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -425,6 +425,61 @@ Matrices: `bt601` (Kr 0.299, Kb 0.114), `bt709` (0.2126, 0.0722), `bt2020` (0.26
 `rgb` (the Y, U and V planes hold G, B and R) and `custom` (`kr`, `kb`). Transfers: `srgb`,
 `bt1886` (power 2.4), `linear`, and `pq` and `hlg` tone mapped to SDR through the BT.2390 EETF
 from a fixed 1000-nit peak to 100 nits.
+
+## View geometry
+
+`dvv/media/view.h` places an image in a viewport. Viewport sizes and offsets are in viewport
+pixels, image sizes in image pixels; pixel (i, j) covers [i, i+1) x [j, j+1).
+
+- The request: a `ViewRequest` is Fit, or Zoom with a zoom, a centre and the image size it was
+  made for. `resolveView` turns it into a transform; a Zoom request made for another image size
+  resolves as Fit. `zoomAround` keeps the image point under an anchor in place at a new zoom,
+  `panBy` moves the image by viewport pixels and `canPan` tells whether a pan can move it. Both
+  clamp the stored centre so that an image larger than the viewport covers it; the zoom itself is
+  not clamped.
+- The transform: `ViewTransform::fit` shows the whole image centred at the largest zoom that
+  fits, with whole-pixel offsets. `ViewTransform::zoomed` puts a requested image point at the
+  viewport's centre, clamped as above; a smaller image is centred. `offset()` is the viewport
+  pixel of image point (0, 0) as these computed it (saturated in `zoomed()`), `origin()` the image
+  point at the viewport's (0, 0).
+- The rules: `imagePointAt` is the image point under a viewport point, `origin + point / zoom`.
+  `imagePixelAt` is the image pixel shown at the viewport pixel under a point, by the pixel-centre
+  rule below, so it always agrees with the picture and the cursor marker (`nullopt` outside the
+  image).
+
+`dvv/media/view_lines.h` holds the one rule for lines on the shown image, per axis (`axisX` and
+`axisY` give an `AxisView`). Viewport pixel p shows the image point at its centre,
+u(p) = (p + 0.5 - offset) / zoom, and the image pixel floor(u(p)). The image span, the lines, the
+halos, the cursor markers and `imagePixelAt` all derive from it: `firstPixelOf(k)` is the first
+viewport pixel of image pixel k, a line at boundary k starts there (the outer edges are drawn
+inside the image), and nothing is drawn outside the image or the viewport. The arithmetic is
+32-bit int and float as in a shader, built without FP contraction.
+
+Lines come in three nested levels (`LineLevel`: a power-of-two step, a thickness, drawn, halo),
+coarsest first. `levelVisible` tells whether a level's spacing reaches a minimum, `lineAt` finds
+the line or halo under a pixel (the coarsest level wins), `tickLevel` the level a boundary belongs
+to, and `linesInView` lists a level's lines in the viewport (CPU only). `pictureRegion` takes
+strips along the top and left edge of an output frame and returns the rest: the viewport a
+`ViewTransform` is resolved against. `cursorPixel` is the image pixel under an output point inside
+that region (`imagePixelAt` of the region-local point), `nullopt` over a strip or past the output;
+`PixelRect::contains` is its half-open containment rule, for hit tests too. `visiblePicture` is
+the part of the region that shows the image, and `rulerRects` places a top ruler, a left ruler and
+their corner, as thick as the strips, against that visible picture, or at the output's edges where
+the picture fills the region or shows no image. `nearestTick` is the tick nearest an image pixel's
+centre on the finest drawn level (CPU only).
+
+`shaders/view_lines.slang` is the same rule for shaders: the functions of `view_lines.h` except
+`axisX`, `axisY`, `linesInView`, `pictureRegion`, `cursorPixel`, `visiblePicture`, `rulerRects`
+and `nearestTick`, with the same names in the same namespace and the same statements. A GPU divide
+need not be correctly rounded, so at a zoom that is not a power of two `imageCoordinateAt` may be a
+few ulp off the CPU; at a power-of-two zoom the results are equal wherever the driver divides by a
+power of two exactly. dvv-media exports the module: an application's shaders take it with
+`dvv_add_shaders(... IMPORTS dvv::media)` and
+
+```slang
+import dvv_media.view_lines;
+using namespace dvv::media;  // or dvv::media::lineAt(...)
+```
 
 ## Adding a built-in format
 

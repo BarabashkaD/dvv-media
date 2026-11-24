@@ -6,6 +6,24 @@ the dvv rules: compatible = the same 0.minor and at least the minimum version; a
 unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
 notes (there are no GitHub Releases).
 
+## [0.4.0] - 2026-11-24
+
+### Added
+- `dvv/media/view.h`, the view geometry moved in from an application: `ViewRequest`,
+  `ViewTransform` (`fit`, `zoomed`, `offset()`, `origin()`), `resolveView`, `imagePointAt`,
+  `imagePixelAt`, `zoomAround`, `panBy` and `canPan`.
+- `dvv/media/view_lines.h`, the lines on the shown image by the pixel-centre rule: `AxisView`,
+  `axisX`, `axisY`, `imageCoordinateAt`, `boundaryAt`, `firstPixelOf`, `imageSpan`, `lineSpan`,
+  `haloSpan`, `cursorSpan`, the line levels (`LineLevel`, `levelVisible`, `lineAt`, `tickLevel`,
+  `linesInView`), `pictureRegion` (`PixelRect` with `contains`), `cursorPixel`, `visiblePicture`
+  and `rulerRects` (`RulerRects`) for rulers that hug the visible picture, and `nearestTick`.
+- `shaders/view_lines.slang`, the same rule for shaders, exported with the package: an
+  application's shaders take it with `dvv_add_shaders(... IMPORTS dvv::media)` and
+  `import dvv_media.view_lines;`.
+
+### Changed
+- Requires dvv-gpu 0.5.0 (shader modules a dependency exports).
+
 ## [0.3.0] - 2026-11-22
 
 ### Added
