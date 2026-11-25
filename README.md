@@ -32,7 +32,7 @@ Applications use dvv-media as a git submodule in their `libs/` folder, next to d
 providers are in the component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.4 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.5 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -467,6 +467,13 @@ the part of the region that shows the image, and `rulerRects` places a top ruler
 their corner, as thick as the strips, against that visible picture, or at the output's edges where
 the picture fills the region or shows no image. `nearestTick` is the tick nearest an image pixel's
 centre on the finest drawn level (CPU only).
+
+For ruler numbers and tags: `visiblePixels` is the first and last image pixel an axis shows, a
+partly visible one counted (the whole picture gives 0 and size - 1 at any zoom); `pixelCentreAt`
+is where the centre of an image pixel lies in the viewport, computed once so that the CPU and a
+shader place a label on it alike; `numberStepLog2` is the ruler's number step, the smallest power
+of two from the major step up whose spacing reaches the width a number needs, no larger than the
+first step past the image size.
 
 `shaders/view_lines.slang` is the same rule for shaders: the functions of `view_lines.h` except
 `axisX`, `axisY`, `linesInView`, `pictureRegion`, `cursorPixel`, `visiblePicture`, `rulerRects`

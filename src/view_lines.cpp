@@ -60,6 +60,26 @@ PixelSpan haloOf(PixelSpan line, PixelSpan image) noexcept {
     return clipSpan({line.begin - 1, line.end + 1}, image);
 }
 
+// The image point at the left edge of viewport pixel `pixel`, one float operation per statement.
+float imageEdgeAt(const AxisView& axis, std::int32_t pixel) noexcept {
+    const float shifted = static_cast<float>(pixel) - static_cast<float>(axis.offset);
+    const float u = shifted / axis.zoom;
+    return u;
+}
+
+// An image pixel as a whole float, kept in [0, size - 1]; the caller has checked that the axis
+// shows an image (size > 0).
+std::uint32_t keptInImage(const AxisView& axis, float c) noexcept {
+    const std::uint32_t last = axis.size - 1;
+    if (!(c >= 0.0F)) {
+        return 0;
+    }
+    if (c >= 0x1p32F) {
+        return last;
+    }
+    return std::min(static_cast<std::uint32_t>(c), last);
+}
+
 // k is a multiple of 1 << step_log2; a step_log2 of 32 or more has the single multiple 0.
 bool divides(std::uint32_t step_log2, std::uint32_t k) noexcept {
     if (step_log2 >= 32) {
@@ -170,6 +190,46 @@ PixelSpan cursorSpan(const AxisView& axis, std::uint32_t c) noexcept {
     const std::int32_t begin = std::min(firstPixelOf(axis, c), last);
     const std::int32_t end = std::max(begin + 1, firstPixelOf(axis, c + 1));
     return clipSpan({begin, end}, image);
+}
+
+std::optional<PixelRange> visiblePixels(const AxisView& axis) noexcept {
+    const PixelSpan image = imageSpan(axis);
+    if (image.empty()) {
+        return std::nullopt;
+    }
+    // An end of the visible extent that the viewport does not cut is the image's own end.
+    std::uint32_t first = 0;
+    if (boundaryAt(axis, 0) < 0.0F) {
+        first = keptInImage(axis, std::floor(imageEdgeAt(axis, 0)));
+    }
+    std::uint32_t last = axis.size - 1;
+    const auto extent = static_cast<std::int32_t>(std::min(axis.extent, 0x7FFFFFFFU));
+    if (boundaryAt(axis, axis.size) > static_cast<float>(extent)) {
+        const float after = std::ceil(imageEdgeAt(axis, extent));
+        last = keptInImage(axis, after - 1.0F);
+    }
+    // Far from the origin the two divides can round past each other.
+    return PixelRange{.first = first, .last = std::max(first, last)};
+}
+
+float pixelCentreAt(const AxisView& axis, std::uint32_t c) noexcept {
+    const float centre = static_cast<float>(c) + 0.5F;
+    const float product = centre * axis.zoom;
+    const float b = static_cast<float>(axis.offset) + product;
+    return b;
+}
+
+std::uint32_t numberStepLog2(std::uint32_t major_step_log2, float zoom, float needed_spacing,
+                             std::uint32_t image_size) noexcept {
+    std::uint32_t s = major_step_log2;
+    while (s < 31 && (1U << s) <= image_size) {
+        const float spacing = static_cast<float>(1U << s) * zoom;
+        if (!(spacing < needed_spacing)) {
+            break;
+        }
+        ++s;
+    }
+    return s;
 }
 
 bool levelVisible(std::uint32_t step_log2, float zoom, float minimum) noexcept {

@@ -38,6 +38,13 @@ public struct PixelSpan  // [begin, end) in viewport pixels; an empty span is {0
     }
 };
 
+public struct PixelRange  // image pixels, both inclusive
+{
+    public bool valid;  // false: the axis shows no image pixel (the C++ nullopt)
+    public uint first;
+    public uint last;
+};
+
 // Coarsest first: index 0 wins in lineAt and tickLevel.
 public struct LineLevel
 {
@@ -177,6 +184,78 @@ public PixelSpan cursorSpan(AxisView axis, uint c)
     const int begin = min(firstPixelOf(axis, c), last);
     const int end = max(begin + 1, firstPixelOf(axis, c + 1u));
     return clipSpan({ begin, end }, image);
+}
+
+// The image point at the left edge of viewport pixel `pixel`.
+float imageEdgeAt(AxisView axis, int pixel)
+{
+    precise const float shifted = float(pixel) - float(axis.offset);
+    precise const float u = shifted / axis.zoom;
+    return u;
+}
+
+// An image pixel as a whole float, kept in [0, size - 1]; the caller has checked that the axis
+// shows an image (size > 0).
+uint keptInImage(AxisView axis, float c)
+{
+    const uint last = axis.size - 1u;
+    if (!(c >= 0.0))
+    {
+        return 0u;
+    }
+    if (c >= 4294967296.0)
+    {
+        return last;
+    }
+    return min(uint(c), last);
+}
+
+public PixelRange visiblePixels(AxisView axis)
+{
+    const PixelSpan image = imageSpan(axis);
+    if (image.empty())
+    {
+        return { false, 0u, 0u };
+    }
+    // An end of the visible extent that the viewport does not cut is the image's own end.
+    uint first = 0u;
+    if (boundaryAt(axis, 0u) < 0.0)
+    {
+        first = keptInImage(axis, floor(imageEdgeAt(axis, 0)));
+    }
+    uint last = axis.size - 1u;
+    const int extent = int(min(axis.extent, 0x7FFFFFFFu));
+    if (boundaryAt(axis, axis.size) > float(extent))
+    {
+        const float after = ceil(imageEdgeAt(axis, extent));
+        precise const float before = after - 1.0;
+        last = keptInImage(axis, before);
+    }
+    // Far from the origin the two divides can round past each other.
+    return { true, first, max(first, last) };
+}
+
+public float pixelCentreAt(AxisView axis, uint c)
+{
+    precise const float centre = float(c) + 0.5;
+    precise const float product = centre * axis.zoom;
+    precise const float b = float(axis.offset) + product;
+    return b;
+}
+
+public uint numberStepLog2(uint majorStepLog2, float zoom, float neededSpacing, uint imageSize)
+{
+    uint s = majorStepLog2;
+    while (s < 31u && (1u << s) <= imageSize)
+    {
+        precise const float spacing = float(1u << s) * zoom;
+        if (!(spacing < neededSpacing))
+        {
+            break;
+        }
+        ++s;
+    }
+    return s;
 }
 
 public bool levelVisible(uint stepLog2, float zoom, float minimum)

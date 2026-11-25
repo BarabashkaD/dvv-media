@@ -14,8 +14,8 @@ struct ProbePush
     uint4 levels[3];  // LineLevel: stepLog2, thickness, drawn, halo
     uint width;
     float minimum;  // levelVisible's minimum spacing
-    uint pad0;
-    uint pad1;
+    uint majorStepLog2;  // numberStepLog2's major step
+    float neededSpacing;  // numberStepLog2's needed spacing
 };
 
 [[vk::push_constant]] ConstantBuffer<ProbePush> pc;
@@ -61,4 +61,16 @@ void main(uint3 id: SV_DispatchThreadID)
                                   : 0xFFFFFFFFu;
     rows[uint2(i, 18u)] = tickLevel(i, levels);
     rows[uint2(i, 19u)] = levelVisible(i, pc.zoom, pc.minimum) ? 1u : 0u;
+    // The axis panned by i pixels (the offset wraps as a uint).
+    AxisView panned = axis;
+    panned.offset = asint(asuint(axis.offset) - i);
+    const PixelRange visible = visiblePixels(panned);
+    rows[uint2(i, 20u)] = visible.valid ? 1u : 0u;
+    rows[uint2(i, 21u)] = visible.first;
+    rows[uint2(i, 22u)] = visible.last;
+    // The zoom times 2^(i mod 16 - 8), exact.
+    const float scale = asfloat((127u + (i % 16u) - 8u) << 23u);
+    precise const float zoom = pc.zoom * scale;
+    rows[uint2(i, 23u)] = numberStepLog2(pc.majorStepLog2, zoom, pc.neededSpacing, pc.size);
+    rows[uint2(i, 24u)] = asuint(pixelCentreAt(axis, i));
 }
