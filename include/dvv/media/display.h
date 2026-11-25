@@ -62,9 +62,10 @@ struct DisplayAffine {
 };
 [[nodiscard]] DisplayAffine displayAffine(FormatId format, const ColourParams& resolved);
 
-// CPU reference of ToDisplay for one pixel. `code_values` in component order (alpha ignored;
-// missing entries count as 0). Returns linear-light RGBA (primaries not converted), each in
-// [0, 1], alpha 1.
+// CPU reference of ToDisplay for one pixel. `code_values` in component order; a missing colour
+// entry counts as 0. Returns linear-light RGB (primaries not converted), each in [0, 1], and the
+// frame's alpha: straight (not premultiplied), full range (also in limited-range YUV), in [0, 1];
+// 1 for a format without an A component or when the A entry is missing.
 [[nodiscard]] std::array<float, 4> toDisplayReference(
     FormatId format, const ColourParams& resolved,
     std::span<const std::uint16_t> code_values) noexcept;

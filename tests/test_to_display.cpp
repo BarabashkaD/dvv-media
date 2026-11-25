@@ -64,8 +64,8 @@ TEST_SUITE("to_display") {
         }
         CHECK(push.planeLayout == Layout{0x000, 0x111, 0x211, 0});
         CHECK(push.componentCount == 3);
-        CHECK(push.transfer == 1);  // the default curve is BT.1886 (D5R section 1.4)
-        CHECK(push.pad0 == 0);
+        CHECK(push.transfer == 1);       // the default curve is BT.1886 (D5R section 1.4)
+        CHECK(push.alphaScale == 0.0F);  // no alpha component
         CHECK(push.width == 33);
         CHECK(push.height == 17);
         CHECK(push.pad == std::array<std::uint32_t, 3>{});
@@ -83,8 +83,11 @@ TEST_SUITE("to_display") {
         CHECK(pushOf("yuv420p", {.transfer = TransferFn::Linear}).transfer == 2);
         CHECK(pushOf("yuv420p", {.transfer = TransferFn::Pq}).transfer == 3);
         CHECK(pushOf("yuv420p", {.transfer = TransferFn::Hlg}).transfer == 4);
-        // The primaries are information only (D5R section 2.1): no gamut conversion flag.
-        CHECK(pushOf("yuv420p", {.primaries = Primaries::Bt2020}).pad0 == 0);
+        // The alpha scale: 1 / (2^bits - 1) of the A component, 0 without one.
+        CHECK(pushOf("yuv420p", {}).alphaScale == 0.0F);
+        CHECK(pushOf("gray", {}).alphaScale == 0.0F);
+        CHECK(pushOf("rgba", {}).alphaScale == 1.0F / 255.0F);
+        CHECK(pushOf("rgba64le", {}).alphaScale == 1.0F / 65535.0F);
 
         const ColourParams resolved{.matrix = ColourMatrix::Bt709,
                                     .range = ColourRange::Limited,
@@ -119,9 +122,9 @@ TEST_SUITE("to_display") {
                 dvv::json::get<std::uint32_t>(field.at("binding"), "offset").value_or(~0U);
         }
         const std::map<std::string, std::uint32_t> expected{
-            {"row0", 0},   {"row1", 16},   {"row2", 32},           {"planeLayout", 48},
-            {"width", 64}, {"height", 68}, {"componentCount", 72}, {"transfer", 76},
-            {"pad0", 80},  {"pad1", 84},   {"pad2", 88},           {"pad3", 92}};
+            {"row0", 0},        {"row1", 16},   {"row2", 32},           {"planeLayout", 48},
+            {"width", 64},      {"height", 68}, {"componentCount", 72}, {"transfer", 76},
+            {"alphaScale", 80}, {"pad1", 84},   {"pad2", 88},           {"pad3", 92}};
         CHECK(offsets == expected);
     }
 

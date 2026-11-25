@@ -32,7 +32,7 @@ Applications use dvv-media as a git submodule in their `libs/` folder, next to d
 providers are in the component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.5 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.6 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -382,9 +382,10 @@ store has no path to it.
 
 `ToDisplay` (`shaders/to_display.slang`, CPU reference `toDisplayReference()`) maps code values to
 R'G'B' (`displayAffine()`: range, matrix, component order), clamps, applies the transfer's EOTF
-and clamps again. Chroma is taken from the nearest sample; alpha is written as 1. The primaries
-are information only: they are not converted, so BT.2020 shows like BT.709 (as on a monitor that
-ignores them).
+and clamps again. Chroma is taken from the nearest sample. Alpha is the frame's alpha, straight
+(not premultiplied) and full range (also in a limited-range YUV format), in [0, 1]; 1 for a
+format without an A component. The primaries are information only: they are not converted, so
+BT.2020 shows like BT.709 (as on a monitor that ignores them).
 
 The CPU side of the display transform is public: `toDisplayReference()` for one pixel,
 `srgbEncode()` and `srgbDecode()`, `encodeSrgb8()`, and `floatToHalf()` and `halfToFloat()` for

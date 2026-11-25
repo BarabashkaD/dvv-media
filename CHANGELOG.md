@@ -6,6 +6,14 @@ the dvv rules: compatible = the same 0.minor and at least the minimum version; a
 unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
 notes (there are no GitHub Releases).
 
+## [0.6.0] - 2026-11-26
+
+### Changed
+- The display image's alpha is now the frame's alpha, straight and full range (also in a
+  limited-range YUV format), in [0, 1]; it stays 1 for a format without an A component.
+  `toDisplayReference()` returns it from the A entry (the format's last component), a missing
+  alpha entry counting as 1 (callers that pass only the colour values keep getting alpha 1).
+
 ## [0.5.0] - 2026-11-25
 
 ### Added
