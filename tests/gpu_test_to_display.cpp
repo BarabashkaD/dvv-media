@@ -18,6 +18,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "alpha_formats.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executors.h"
 #include "dvv/base/task.h"
@@ -37,6 +38,7 @@
 #include "gpu_fixture.h"
 #include "packed_source.h"
 #include "patterns.h"
+#include "result_message.h"
 #include "store_state.h"
 #include "to_display.h"
 
@@ -59,6 +61,7 @@ using media::OriginId;
 using media::Primaries;
 using media::ReadLease;
 using media::TransferFn;
+using media::test::CodeValuesSource;
 using media::test::GpuTest;
 using media::test::PackedSource;
 using media::test::runsOf;
@@ -66,7 +69,6 @@ using media::test::runsOf;
 namespace {
 
 constexpr std::uint64_t SEED = 11;
-constexpr std::uint16_t HALF_ONE = 0x3C00;
 FormatId idOf(std::string_view name) {
     const auto id = media::findFormat(name);
     REQUIRE_MESSAGE(id.has_value(), name);
@@ -163,16 +165,36 @@ float halfStep(float value) {
     return media::halfToFloat(static_cast<std::uint16_t>(half + 1U)) - media::halfToFloat(half);
 }
 
-// Compares the display image of one frame with the CPU reference; returns the failures and keeps
-// the first one's text.
-std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped,
+// The noise code values of frame 0 of a PackedSource.
+media::CodeValues noiseCodes(FormatId format, std::uint32_t width, std::uint32_t height) {
+    auto values = detail::generate(detail::Pattern::Noise, format, width, height, SEED, 0);
+    REQUIRE_MESSAGE(values.has_value(), media::test::messageOf(values));
+    return std::move(*values);
+}
+
+// The noise codes with the A component (the last, never subsampled) set to 0, the middle code and
+// the maximum in the first three pixels of row 0.
+media::CodeValues alphaCodes(FormatId format, std::uint32_t width, std::uint32_t height) {
+    media::CodeValues values = noiseCodes(format, width, height);
+    const media::PixelFormatDesc& d = media::formatDesc(format);
+    REQUIRE((d.componentCount == 2 || d.componentCount == 4));
+    const media::ComponentDesc& alpha = d.components[d.componentCount - 1];
+    REQUIRE(alpha.kind == media::ComponentKind::A);
+    std::vector<std::uint16_t>& plane = values.components[d.componentCount - 1];
+    REQUIRE(plane.size() >= 3);
+    plane[0] = 0;
+    plane[1] = static_cast<std::uint16_t>(1U << (alpha.bits - 1U));
+    plane[2] = static_cast<std::uint16_t>((1U << alpha.bits) - 1U);
+    return values;
+}
+
+// Compares the display image of one frame of `values` with the CPU reference; returns the failures
+// and keeps the first one's text.
+std::size_t compareFrame(const media::CodeValues& values, std::string_view set, bool tone_mapped,
                          const FrameDesc& desc, const std::vector<std::uint16_t>& halves,
                          std::optional<std::string>& first) {
+    const FormatId format = values.format;
     const media::PixelFormatDesc& d = media::formatDesc(format);
-    const auto values =
-        detail::generate(detail::Pattern::Noise, format, desc.width, desc.height, SEED, 0);
-    REQUIRE_MESSAGE(values.has_value(),
-                    (values.has_value() ? std::string{} : values.error().describe()));
     const ColourParams resolved = media::resolveColour(desc).params;
     std::array<std::uint32_t, media::MAX_COMPONENTS> grid_width{};
     for (std::size_t k = 0; k < d.componentCount; ++k) {
@@ -197,7 +219,7 @@ std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped
                 const media::ComponentDesc& component = d.components[k];
                 const std::size_t at = (std::size_t{y >> component.log2SubY} * grid_width[k]) +
                                        (x >> component.log2SubX);
-                codes[k] = values->components[k][at];
+                codes[k] = values.components[k][at];
             }
             const std::array<float, 4> reference = media::toDisplayReference(
                 format, resolved, std::span<const std::uint16_t>(codes).first(d.componentCount));
@@ -227,8 +249,12 @@ std::size_t compareFrame(FormatId format, std::string_view set, bool tone_mapped
                     fail(x, y, channel, expected, got);
                 }
             }
-            if (halves[pixel + 3] != HALF_ONE) {
-                fail(x, y, 3, 1.0F, halves[pixel + 3]);
+            // The frame's alpha, straight and full range (1 without A). 0 and 1 are exact (no A,
+            // A = 0, A = max); a value in between is within one half step.
+            const std::uint16_t alpha_expected = media::floatToHalf(reference[3]);
+            const int alpha_tolerance = (reference[3] == 0.0F || reference[3] == 1.0F) ? 0 : 1;
+            if (std::abs(int{halves[pixel + 3]} - int{alpha_expected}) > alpha_tolerance) {
+                fail(x, y, 3, reference[3], halves[pixel + 3]);
             }
         }
     }
@@ -248,53 +274,70 @@ std::shared_ptr<gpu::GpuImage> makeImage(gpu::ExecutionContext& context, std::ui
     return std::move(*image);
 }
 
+// For every colour set: attaches make_source(desc) for a frame of the size and format of `values`,
+// reads frame 0 through the display view and compares it with the CPU reference of `values`.
+template <typename MakeSource>
+void checkColourSets(GpuTest& gpu_test, const media::CodeValues& values, MakeSource make_source) {
+    const DisplayStore test(gpu_test);
+    const std::string& name = media::formatDesc(values.format).name;
+    std::vector<OriginId> origins;
+    for (std::size_t s = 0; s < colourSets().size(); ++s) {
+        const ColourSet& set = colourSets()[s];
+        CAPTURE(set.name);
+        const FrameDesc desc{.format = values.format,
+                             .colour = media::internColour(set.params),
+                             .width = values.width,
+                             .height = values.height};
+        const auto attached = test.store->attach(make_source(desc));
+        REQUIRE_MESSAGE(attached.has_value(), media::test::messageOf(attached));
+        origins.push_back(*attached);
+        std::vector<std::uint16_t> halves;
+        {
+            const dvv::Result<ReadLease> lease = syncWait(test.store->acquire(
+                {*attached, 0}, media::displayView(test.device), gpu_test.executor()));
+            REQUIRE_MESSAGE(lease.has_value(), media::test::messageOf(lease));
+            CHECK(lease->fidelity() == Fidelity::Derived);
+            gpu::GpuImage& image = displayImageOf(*lease);
+            REQUIRE(image.width() == values.width);
+            REQUIRE(image.height() == values.height);
+            halves = readHalves(gpu_test, image);
+        }
+        std::optional<std::string> first;
+        const std::size_t failures = compareFrame(values, set.name, s >= 6, desc, halves, first);
+        if (failures > 0) {
+            FAIL_CHECK(std::format("{} {}: {} mismatches; first: {}", name, set.name, failures,
+                                   first.value_or("?")));
+        }
+    }
+    for (const OriginId origin : origins) {
+        test.store->detach(origin);
+    }
+    REQUIRE(detail::StoreAccess::checkInvariants(*test.store).has_value());
+}
 }  // namespace
 
 TEST_CASE_FIXTURE(GpuTest, "ToDisplay matches the CPU reference for every format and colour set") {
     for (const FormatId format : media::catalogue()) {
         const media::PixelFormatDesc& d = media::formatDesc(format);
         SUBCASE(d.name.c_str()) {
-            const DisplayStore test(*this);
             const std::uint32_t multiple = std::max<std::uint32_t>(d.widthMultiple, 1);
             const std::uint32_t width = (33 + multiple - 1) / multiple * multiple;
-            std::vector<OriginId> origins;
-            for (std::size_t s = 0; s < colourSets().size(); ++s) {
-                const ColourSet& set = colourSets()[s];
-                CAPTURE(set.name);
-                const FrameDesc desc{.format = format,
-                                     .colour = media::internColour(set.params),
-                                     .width = width,
-                                     .height = 17};
-                const auto attached =
-                    test.store->attach(std::make_shared<PackedSource>(desc, 1, SEED));
-                REQUIRE_MESSAGE(
-                    attached.has_value(),
-                    (attached.has_value() ? std::string{} : attached.error().describe()));
-                origins.push_back(*attached);
-                std::vector<std::uint16_t> halves;
-                {
-                    const dvv::Result<ReadLease> lease = syncWait(test.store->acquire(
-                        {*attached, 0}, media::displayView(test.device), executor()));
-                    REQUIRE_MESSAGE(lease.has_value(),
-                                    (lease.has_value() ? std::string{} : lease.error().describe()));
-                    CHECK(lease->fidelity() == Fidelity::Derived);
-                    gpu::GpuImage& image = displayImageOf(*lease);
-                    REQUIRE(image.width() == width);
-                    REQUIRE(image.height() == 17);
-                    halves = readHalves(*this, image);
-                }
-                std::optional<std::string> first;
-                const std::size_t failures =
-                    compareFrame(format, set.name, s >= 6, desc, halves, first);
-                if (failures > 0) {
-                    FAIL_CHECK(std::format("{} {}: {} mismatches; first: {}", d.name, set.name,
-                                           failures, first.value_or("?")));
-                }
-            }
-            for (const OriginId origin : origins) {
-                test.store->detach(origin);
-            }
-            REQUIRE(detail::StoreAccess::checkInvariants(*test.store).has_value());
+            checkColourSets(*this, noiseCodes(format, width, 17), [](const FrameDesc& desc) {
+                return std::make_shared<PackedSource>(desc, 1, SEED);
+            });
+        }
+    }
+}
+
+TEST_CASE_FIXTURE(GpuTest, "ToDisplay: alpha of custom Y+A and YUV+A formats") {
+    for (const std::string_view text : {media::test::YA8_JSON, media::test::YUVA10_JSON}) {
+        const dvv::Result<FormatId> format = media::test::loadFormat(text);
+        REQUIRE_MESSAGE(format.has_value(), media::test::messageOf(format));
+        SUBCASE(media::formatDesc(*format).name.c_str()) {
+            const media::CodeValues values = alphaCodes(*format, 33, 17);
+            checkColourSets(*this, values, [&values](const FrameDesc& desc) {
+                return std::make_shared<CodeValuesSource>(desc, values);
+            });
         }
     }
 }

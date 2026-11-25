@@ -1,6 +1,7 @@
 #pragma once
 
-// A test source of packed noise frames, and helpers for the original-read tests (host and GPU).
+// Test sources of packed frames (noise or fixed code values), and helpers for the original-read
+// and display tests (host and GPU).
 
 #include <algorithm>
 #include <cstddef>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "dvv/base/error.h"
@@ -23,17 +25,36 @@
 
 namespace dvv::media::test {
 
+// The SourceInfo of a test source: `frames` frames of `desc` at 25 fps, cheap random access.
+[[nodiscard]] inline SourceInfo testSourceInfo(const FrameDesc& desc, std::int64_t frames) {
+    SourceInfo info;
+    info.desc = desc;
+    info.fps = Rational{25, 1};
+    info.frameCount = frames;
+    info.access = SourceAccess::RandomCheap;
+    info.provider = "test";
+    return info;
+}
+
+// Packs `values` into a host frame of `desc` allocated through `ctx` and publishes it.
+[[nodiscard]] inline Result<FrameRef> publishPacked(const FrameDesc& desc, const CodeValues& values,
+                                                    ProduceContext& ctx) {
+    DVV_TRY(const std::vector<std::byte> bytes, pack(values));
+    DVV_TRY(const std::shared_ptr<HostFrame> frame, ctx.allocateHost(desc, bytes.size(), 64, 0));
+    const std::span<std::byte> data = frame->data();
+    if (data.size() != bytes.size()) {
+        return makeError(Errc::Internal, "packed: the host frame has another size");
+    }
+    std::ranges::copy(bytes, data.begin());
+    return ctx.publish(frame);
+}
+
 // Frame i is pack(detail::generate(Noise, desc.format, width, height, seed, i)). A test double, not
 // a component.
 class PackedSource final : public ISource {
 public:
-    PackedSource(FrameDesc desc, std::int64_t frames, std::uint64_t seed) : seed_(seed) {
-        info_.desc = desc;
-        info_.fps = Rational{25, 1};
-        info_.frameCount = frames;
-        info_.access = SourceAccess::RandomCheap;
-        info_.provider = "test";
-    }
+    PackedSource(const FrameDesc& desc, std::int64_t frames, std::uint64_t seed)
+        : info_(testSourceInfo(desc, frames)), seed_(seed) {}
 
     [[nodiscard]] const SourceInfo& info() const noexcept override { return info_; }
 
@@ -45,20 +66,32 @@ public:
         }
         const CodeValues values = co_try(detail::generate(detail::Pattern::Noise, desc.format,
                                                           desc.width, desc.height, seed_, index));
-        const std::vector<std::byte> bytes = co_try(pack(values));
-        const std::shared_ptr<HostFrame> frame =
-            co_try(ctx.allocateHost(desc, bytes.size(), 64, 0));
-        const std::span<std::byte> data = frame->data();
-        if (data.size() != bytes.size()) {
-            co_return makeError(Errc::Internal, "packed: the host frame has another size");
-        }
-        std::ranges::copy(bytes, data.begin());
-        co_return ctx.publish(frame);
+        co_return publishPacked(desc, values, ctx);
     }
 
 private:
     SourceInfo info_;
     std::uint64_t seed_;
+};
+
+// One frame of fixed code values, packed on every produce(). A test double, not a component.
+class CodeValuesSource final : public ISource {
+public:
+    CodeValuesSource(const FrameDesc& desc, CodeValues values)
+        : info_(testSourceInfo(desc, 1)), values_(std::move(values)) {}
+
+    [[nodiscard]] const SourceInfo& info() const noexcept override { return info_; }
+
+    [[nodiscard]] Task<Result<FrameRef>> produce(std::int64_t index, ProduceContext& ctx) override {
+        if (index != 0) {
+            co_return makeError(Errc::Internal, std::format("values: no frame {}", index));
+        }
+        co_return publishPacked(info_.desc, values_, ctx);
+    }
+
+private:
+    SourceInfo info_;
+    CodeValues values_;
 };
 
 // The runs of the converter `name`; 0 when the store has no such converter.

@@ -10,6 +10,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "display_alpha.h"
 #include "dvv/base/error.h"
 #include "dvv/media/display.h"
 #include "dvv/media/display_vulkan.h"
@@ -69,6 +70,7 @@ Result<ToDisplayPush> toDisplayPush(FormatId format, const ColourParams& resolve
     push.height = height;
     push.componentCount = d.componentCount;
     push.transfer = transferCode(resolved.transfer);
+    push.alphaScale = alphaScaleOf(format);
     return push;
 }
 

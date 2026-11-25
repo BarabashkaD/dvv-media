@@ -1,8 +1,9 @@
 // ToDisplay (design M3 D3-D5): one invocation per output pixel reads the code values of the
 // unpacked planes (nearest chroma: x >> log2SubX), applies the affine map of displayAffine(),
 // clamps, applies the transfer (sRGB/BT.1886/linear, or PQ/HLG tone mapped to SDR with the BT.2390
-// EETF, 1000 -> 100 nits), clamps and stores linear RGBA16F. The primaries are information only
-// (D5R §2.1): no gamut conversion. Must match dvv::media::toDisplayReference (display.cpp) formula by formula.
+// EETF, 1000 -> 100 nits), clamps and stores linear RGBA16F: RGB and the frame's straight,
+// full-range alpha (1 without A). The primaries are information only (D5R §2.1): no gamut
+// conversion. Must match dvv::media::toDisplayReference (display.cpp) formula by formula.
 struct ToDisplayPush
 {
     float4 row0;          // R' = dot(row0.xyz, c) + row0.w
@@ -11,9 +12,9 @@ struct ToDisplayPush
     uint4 planeLayout;    // component k: log2SubX | log2SubY << 4 | binding << 8
     uint width;           // output size = frame size
     uint height;
-    uint componentCount;  // 1..4 (alpha ignored)
+    uint componentCount;  // 1..4 (alpha last, when 2 or 4)
     uint transfer;        // 0 sRGB/unspecified, 1 BT.1886, 2 linear, 3 PQ, 4 HLG
-    uint pad0;            // was the BT.2020 -> BT.709 flag; always 0
+    float alphaScale;     // 1 / (2^bits - 1) of A; 0 without A
     uint pad1;
     uint pad2;
     uint pad3;
@@ -141,5 +142,11 @@ void main(uint3 id: SV_DispatchThreadID)
                       pc.row2.x * c.x + pc.row2.y * c.y + pc.row2.z * c.z + pc.row2.w);
     v = clamp(v, 0.0, 1.0);
     float3 rgb = toLinear(v);
-    display[id.xy] = float4(clamp(rgb, 0.0, 1.0), 1.0);
+    // The frame's alpha: straight, full range (also in limited-range YUV), 1 without A.
+    float alpha = 1.0;
+    if (pc.alphaScale > 0.0)
+    {
+        alpha = clamp(codeValue(pc.componentCount - 1u, id.xy) * pc.alphaScale, 0.0, 1.0);
+    }
+    display[id.xy] = float4(clamp(rgb, 0.0, 1.0), alpha);
 }

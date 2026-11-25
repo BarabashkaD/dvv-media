@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 
+#include "display_alpha.h"
 #include "dvv/media/colour_preset.h"
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
@@ -281,11 +282,20 @@ DisplayAffine displayAffine(FormatId format, const ColourParams& resolved) {
 std::array<float, 4> toDisplayReference(FormatId format, const ColourParams& resolved,
                                         std::span<const std::uint16_t> code_values) noexcept {
     const DisplayAffine affine = displayAffine(format, resolved);
-    const std::size_t count = std::min<std::size_t>(
-        {formatDesc(format).componentCount, std::size_t{3}, code_values.size()});
+    const std::size_t component_count = formatDesc(format).componentCount;
+    // Colour: Y, or Y U V / R G B (the shader's rule); a missing entry counts as 0.
+    const std::size_t colour_count = component_count >= 3 ? 3 : 1;
+    const std::size_t count = std::min(colour_count, code_values.size());
     std::array<float, 3> c{};
     for (std::size_t k = 0; k < count; ++k) {
         c[k] = static_cast<float>(code_values[k]);
+    }
+    // Alpha: the last component when the format has A; a missing entry counts as 1.
+    const float alpha_scale = detail::alphaScaleOf(format);
+    float alpha = 1.0F;
+    if (alpha_scale > 0.0F && code_values.size() >= component_count) {
+        alpha = std::clamp(static_cast<float>(code_values[component_count - 1]) * alpha_scale, 0.0F,
+                           1.0F);
     }
     std::array<float, 3> v{};
     for (std::size_t r = 0; r < 3; ++r) {
@@ -314,7 +324,7 @@ std::array<float, 4> toDisplayReference(FormatId format, const ColourParams& res
         case TransferFn::Hlg: v = hlgToLinear(v); break;
     }
     return {std::clamp(v[0], 0.0f, 1.0f), std::clamp(v[1], 0.0f, 1.0f),
-            std::clamp(v[2], 0.0f, 1.0f), 1.0f};
+            std::clamp(v[2], 0.0f, 1.0f), alpha};
 }
 
 float srgbEncode(float linear) noexcept {
@@ -391,3 +401,19 @@ float halfToFloat(std::uint16_t half) noexcept {
 }
 
 }  // namespace dvv::media
+
+namespace dvv::media::detail {
+
+float alphaScaleOf(FormatId format) noexcept {
+    const PixelFormatDesc& d = formatDesc(format);
+    if (d.componentCount == 0 || d.componentCount > MAX_COMPONENTS) {
+        return 0.0F;  // unknown id
+    }
+    const ComponentDesc& last = d.components[d.componentCount - 1];
+    if (last.kind != ComponentKind::A || last.bits == 0 || last.bits > 16) {
+        return 0.0F;
+    }
+    return 1.0F / static_cast<float>((1U << last.bits) - 1U);
+}
+
+}  // namespace dvv::media::detail

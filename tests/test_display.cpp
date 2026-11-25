@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "alpha_formats.h"
 #include "dvv/base/error.h"
 #include "dvv/gpu/device_id.h"
 #include "dvv/media/colour_preset.h"
@@ -16,6 +17,7 @@
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
+#include "result_message.h"
 
 namespace media = dvv::media;
 
@@ -494,6 +496,80 @@ TEST_SUITE("display") {
         const std::array<std::uint16_t, 3> pixel{200, 17, 99};
         CHECK(media::toDisplayReference(rgb24, bt2020, pixel) ==
               media::toDisplayReference(rgb24, bt709, pixel));
+    }
+
+    TEST_CASE("toDisplayReference: alpha") {
+        // The display alpha is the frame's: straight, full range, one multiply by 1 / max.
+        const auto expected = [](std::uint16_t a, unsigned bits) {
+            return static_cast<float>(a) * (1.0F / static_cast<float>((1U << bits) - 1U));
+        };
+        const ColourParams srgb{.matrix = ColourMatrix::Rgb, .range = ColourRange::Full};
+        const media::FormatId rgba = idOf("rgba");
+        const std::array<std::uint16_t, 4> opaque{10, 20, 30, 255};
+        const std::array<float, 4> opaque_rgba = media::toDisplayReference(rgba, srgb, opaque);
+        CHECK(opaque_rgba[3] == 1.0F);
+        for (const std::uint16_t a : std::array<std::uint16_t, 5>{0, 1, 128, 254, 255}) {
+            CAPTURE(a);
+            const std::array<std::uint16_t, 4> pixel{10, 20, 30, a};
+            const std::array<float, 4> got = media::toDisplayReference(rgba, srgb, pixel);
+            CHECK(got[3] == expected(a, 8));
+            CHECK(rgbOf(got) == rgbOf(opaque_rgba));
+        }
+        const media::FormatId rgba64 = idOf("rgba64le");
+        for (const std::uint16_t a : std::array<std::uint16_t, 3>{0, 32768, 65535}) {
+            CAPTURE(a);
+            const std::array<std::uint16_t, 4> pixel{1000, 20000, 65535, a};
+            CHECK(media::toDisplayReference(rgba64, srgb, pixel)[3] == expected(a, 16));
+        }
+        // The ends are exact at every width: 0 is transparent, the maximum opaque.
+        const std::array<std::uint16_t, 4> rgba64_clear{1000, 20000, 65535, 0};
+        const std::array<std::uint16_t, 4> rgba64_opaque{1000, 20000, 65535, 65535};
+        CHECK(media::toDisplayReference(rgba64, srgb, rgba64_clear)[3] == 0.0F);
+        CHECK(media::toDisplayReference(rgba64, srgb, rgba64_opaque)[3] == 1.0F);
+
+        // A missing alpha entry counts as 1; formats without alpha give 1.
+        const std::array<std::uint16_t, 3> colour_only{10, 20, 30};
+        CHECK(media::toDisplayReference(rgba, srgb, colour_only)[3] == 1.0F);
+        CHECK(rgbOf(media::toDisplayReference(rgba, srgb, colour_only)) == rgbOf(opaque_rgba));
+        const std::array<std::uint16_t, 4> four{10, 20, 30, 0};
+        for (const std::string_view name : {"rgb24", "yuv420p", "gray"}) {
+            CAPTURE(name);
+            CHECK(media::toDisplayReference(idOf(name), {}, four)[3] == 1.0F);
+        }
+
+        // Gray + alpha: alpha from the last component, colour as with A at the maximum.
+        const auto ya8 = media::test::loadFormat(media::test::YA8_JSON);
+        REQUIRE_MESSAGE(ya8.has_value(), media::test::messageOf(ya8));
+        const std::array<std::uint16_t, 2> ya_opaque{77, 255};
+        const std::array<float, 4> ya_reference = media::toDisplayReference(*ya8, {}, ya_opaque);
+        CHECK(ya_reference[3] == 1.0F);
+        for (const std::uint16_t a : std::array<std::uint16_t, 3>{0, 128, 255}) {
+            CAPTURE(a);
+            const std::array<std::uint16_t, 2> pixel{77, a};
+            const std::array<float, 4> got = media::toDisplayReference(*ya8, {}, pixel);
+            CHECK(got[3] == expected(a, 8));
+            CHECK(rgbOf(got) == rgbOf(ya_reference));
+        }
+
+        // Limited-range YUV + alpha: the alpha stays full range (code 64 is not transparent).
+        const auto yuva10 = media::test::loadFormat(media::test::YUVA10_JSON);
+        REQUIRE_MESSAGE(yuva10.has_value(), media::test::messageOf(yuva10));
+        const ColourParams limited{.matrix = ColourMatrix::Bt709, .range = ColourRange::Limited};
+        const std::array<std::uint16_t, 4> yuva_opaque{500, 400, 600, 1023};
+        const std::array<float, 4> yuva_reference =
+            media::toDisplayReference(*yuva10, limited, yuva_opaque);
+        CHECK(yuva_reference[3] == 1.0F);
+        CHECK(media::toDisplayReference(*yuva10, limited,
+                                        std::array<std::uint16_t, 4>{500, 400, 600, 0})[3] == 0.0F);
+        for (const std::uint16_t a : std::array<std::uint16_t, 4>{0, 64, 512, 1023}) {
+            CAPTURE(a);
+            const std::array<std::uint16_t, 4> pixel{500, 400, 600, a};
+            const std::array<float, 4> got = media::toDisplayReference(*yuva10, limited, pixel);
+            CHECK(got[3] == expected(a, 10));
+            CHECK(rgbOf(got) == rgbOf(yuva_reference));
+        }
+        CHECK(media::toDisplayReference(*yuva10, limited,
+                                        std::array<std::uint16_t, 4>{0, 0, 0, 64})[3] > 0.0F);
     }
 
     TEST_CASE("sRGB helpers") {
