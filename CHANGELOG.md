@@ -6,6 +6,19 @@ the dvv rules: compatible = the same 0.minor and at least the minimum version; a
 unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
 notes (there are no GitHub Releases).
 
+## [0.5.0] - 2026-11-25
+
+### Added
+- `dvv/media/view_lines.h` and `shaders/view_lines.slang`, the geometry of ruler numbers and tags:
+  `visiblePixels` (`PixelRange`), the first and last image pixel an axis shows, a partly visible
+  one counted, the whole picture giving 0 and size - 1 at any zoom; `pixelCentreAt`, the viewport
+  position of an image pixel's centre, without FP contraction so that the CPU and a shader agree;
+  `numberStepLog2`, log2 of a ruler's number step, the finest step from the major step on whose
+  numbers are at least a given spacing apart.
+
+### Changed
+- Requires dvv-gpu 0.6.0.
+
 ## [0.4.0] - 2026-11-24
 
 ### Added

@@ -1,9 +1,11 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -31,7 +33,10 @@ using dvv::media::LineLevel;
 using dvv::media::linesInView;
 using dvv::media::lineSpan;
 using dvv::media::nearestTick;
+using dvv::media::numberStepLog2;
 using dvv::media::pictureRegion;
+using dvv::media::pixelCentreAt;
+using dvv::media::PixelRange;
 using dvv::media::PixelRect;
 using dvv::media::PixelSpan;
 using dvv::media::PointD;
@@ -42,6 +47,7 @@ using dvv::media::ViewMode;
 using dvv::media::ViewStrips;
 using dvv::media::ViewTransform;
 using dvv::media::visiblePicture;
+using dvv::media::visiblePixels;
 
 namespace {
 
@@ -810,4 +816,217 @@ TEST_CASE("view lines: nearestTick") {
     CHECK_FALSE(nearestTick(3, 37, std::array<LineLevel, LINE_LEVELS>{}).has_value());
     CHECK_FALSE(nearestTick(37, 37, levels).has_value());
     CHECK_FALSE(nearestTick(0, 0, levels).has_value());
+}
+
+namespace {
+
+// imagePixelAt of every pixel of the view's x image span lies in visiblePixels, and the range's
+// ends are shown: at the span's first and last pixel.
+void checkVisibleByImagePixelAt(const ViewTransform& view) {
+    const AxisView axis = axisX(view);
+    const PixelSpan span = imageSpan(axis);
+    REQUIRE_FALSE(span.empty());
+    const std::optional<PixelRange> shown = visiblePixels(axis);
+    REQUIRE(shown.has_value());
+    const PixelRange range = shown.value_or(PixelRange{});  // REQUIRE above stops the test case
+    const double y = view.viewport().height / 2.0;
+    std::size_t outside = 0;
+    for (std::int32_t p = span.begin; p < span.end; ++p) {
+        const std::optional<ImagePixel> pixel = imagePixelAt(view, PointD{.x = p + 0.5, .y = y});
+        outside += pixel && range.first <= pixel->x && pixel->x <= range.last ? 0 : 1;
+    }
+    CHECK(outside == 0);
+}
+
+// By the definition: image pixel c covers [b(c), b(c + 1)) in viewport coordinates (b in double)
+// and counts when it overlaps the visible extent [max(0, b(0)), min(extent, b(size))); nullopt
+// where the image span is empty.
+std::optional<PixelRange> visibleByOverlap(const AxisView& axis) {
+    if (imageSpan(axis).empty()) {
+        return std::nullopt;
+    }
+    const auto b = [&](std::uint32_t c) {
+        return axis.offset + (static_cast<double>(c) * static_cast<double>(axis.zoom));
+    };
+    const double begin = std::max(0.0, b(0));
+    const double end = std::min(static_cast<double>(axis.extent), b(axis.size));
+    std::optional<PixelRange> range;
+    for (std::uint32_t c = 0; c < axis.size; ++c) {
+        if (b(c + 1) > begin && b(c) < end) {
+            if (!range) {
+                range = PixelRange{.first = c, .last = c};
+            }
+            range->last = c;
+        }
+    }
+    return range;
+}
+
+}  // namespace
+
+TEST_CASE("view lines: visiblePixels") {
+    // The whole 3840 picture at Fit into 1920.
+    const ViewTransform fit = ViewTransform::fit({1920, 1080}, {3840, 2160});
+    CHECK(visiblePixels(axisX(fit)) == PixelRange{.first = 0, .last = 3839});
+    checkVisibleByImagePixelAt(fit);
+    // Panned at 100 %: offset round(500 - 1000) = -500.
+    const ViewTransform panned =
+        ViewTransform::zoomed({1000, 100}, {2000, 100}, 1, {.x = 1000, .y = 50});
+    REQUIRE(axisX(panned).offset == -500);
+    CHECK(visiblePixels(axisX(panned)) == PixelRange{.first = 500, .last = 1499});
+    checkVisibleByImagePixelAt(panned);
+    // 800 % with offset round(50 - 6.75 x 8) = -4: image pixel 0 covers [-4, 4), partly visible.
+    const ViewTransform close =
+        ViewTransform::zoomed({100, 100}, {100, 100}, 8, {.x = 6.75, .y = 50});
+    REQUIRE(axisX(close).offset == -4);
+    CHECK(visiblePixels(axisX(close)) == PixelRange{.first = 0, .last = 12});
+    checkVisibleByImagePixelAt(close);
+    // A narrower picture.
+    const AxisView narrow{.offset = 100, .zoom = 1, .size = 200, .extent = 1000};
+    CHECK(visiblePixels(narrow) == PixelRange{.first = 0, .last = 199});
+    CHECK(visiblePixels(narrow) == visibleByOverlap(narrow));
+    const ViewTransform centred =
+        ViewTransform::zoomed({1000, 100}, {200, 100}, 1, {.x = 100, .y = 50});
+    CHECK(visiblePixels(axisX(centred)) == PixelRange{.first = 0, .last = 199});
+    checkVisibleByImagePixelAt(centred);
+    // A zoom that is not a power of two.
+    const ViewTransform odd =
+        ViewTransform::zoomed({1000, 100}, {3840, 100}, 0.37, {.x = 1900, .y = 50});
+    const std::optional<PixelRange> odd_range = visiblePixels(axisX(odd));
+    REQUIRE(odd_range.has_value());
+    CHECK(odd_range.value_or(PixelRange{}).first > 0);  // REQUIRE above stops the test case
+    CHECK(odd_range.value_or(PixelRange{}).last < 3839);
+    checkVisibleByImagePixelAt(odd);
+    for (const std::int32_t offset : {-3000, -1203, -7, 0, 5, 999}) {
+        const AxisView axis{.offset = offset, .zoom = 0.37F, .size = 3840, .extent = 1000};
+        CAPTURE(offset);
+        CHECK(visiblePixels(axis) == visibleByOverlap(axis));
+    }
+    // The whole picture at a Fit that is not a power of two, on both axes: the last pixel's area
+    // starts on the last viewport pixel of the image span, but past that pixel's centre.
+    const ViewTransform fit_4k = ViewTransform::fit({1920, 1080}, {4000, 3000});
+    CHECK(visiblePixels(axisX(fit_4k)) == PixelRange{.first = 0, .last = 3999});
+    CHECK(visiblePixels(axisY(fit_4k)) == PixelRange{.first = 0, .last = 2999});
+    const AxisView third{.offset = 293, .zoom = 1.0F / 3.0F, .size = 4000, .extent = 1920};
+    CHECK(visiblePixels(third) == PixelRange{.first = 0, .last = 3999});
+    CHECK(visiblePixels(third) == visibleByOverlap(third));
+    // Every picture that fits, at 0.37 and at 1/3: the whole picture at any offset.
+    for (const float zoom : {0.37F, 1.0F / 3.0F}) {
+        std::size_t differ = 0;
+        for (std::int32_t offset = 0; offset <= 100; ++offset) {
+            for (std::uint32_t size = 8; size <= 2000; size += 7) {
+                const AxisView axis{.offset = offset, .zoom = zoom, .size = size, .extent = 1000};
+                differ += visiblePixels(axis) == PixelRange{.first = 0, .last = size - 1} ? 0 : 1;
+            }
+        }
+        CAPTURE(zoom);
+        CHECK(differ == 0);
+    }
+    // Saturated: the far edge's image point rounds below the near one's; the range stays ordered.
+    CHECK(visiblePixels({.offset = std::numeric_limits<std::int32_t>::min(),
+                         .zoom = 0x1p31F,
+                         .size = 8,
+                         .extent = 16}) == PixelRange{.first = 1, .last = 1});
+    // The largest size at a tiny zoom, the whole picture in the viewport.
+    CHECK(visiblePixels({.offset = 0, .zoom = 1e-9F, .size = 0xFFFFFFFFU, .extent = 16}) ==
+          PixelRange{.first = 0, .last = 0xFFFFFFFEU});
+    // The largest size with the far end cut: its image point rounds to 2^32, kept at size - 1.
+    CHECK(
+        visiblePixels(
+            {.offset = -0x40000000, .zoom = 0x1.000002p-2F, .size = 0xFFFFFFFFU, .extent = 100}) ==
+        PixelRange{.first = 4294966784U, .last = 0xFFFFFFFEU});
+    // Every power-of-two zoom from 1/16 to 32 and offsets past both ends of the viewport.
+    for (int e = -4; e <= 5; ++e) {
+        const float zoom = std::ldexp(1.0F, e);
+        std::size_t differ = 0;
+        for (std::int32_t offset = -2000; offset <= 250; offset += 3) {
+            const AxisView axis{.offset = offset, .zoom = zoom, .size = 300, .extent = 200};
+            differ += visiblePixels(axis) == visibleByOverlap(axis) ? 0 : 1;
+        }
+        CAPTURE(zoom);
+        CHECK(differ == 0);
+    }
+    // No image, and an image wholly outside the viewport.
+    CHECK_FALSE(visiblePixels(axisX(ViewTransform{})).has_value());
+    CHECK_FALSE(visiblePixels({.offset = 0, .zoom = 0, .size = 8, .extent = 16}).has_value());
+    CHECK_FALSE(visiblePixels({.offset = 0, .zoom = 1, .size = 0, .extent = 16}).has_value());
+    CHECK_FALSE(
+        visiblePixels({.offset = 1000, .zoom = 1, .size = 200, .extent = 1000}).has_value());
+    CHECK_FALSE(
+        visiblePixels({.offset = 1200, .zoom = 1, .size = 200, .extent = 1000}).has_value());
+    CHECK_FALSE(
+        visiblePixels({.offset = -200, .zoom = 1, .size = 200, .extent = 1000}).has_value());
+    CHECK(visiblePixels({.offset = -199, .zoom = 1, .size = 200, .extent = 1000}) ==
+          PixelRange{.first = 199, .last = 199});
+}
+
+TEST_CASE("view lines: numberStepLog2") {
+    constexpr float NEEDED = 37.5F;
+    for (std::uint32_t major = 1; major <= 8; ++major) {
+        for (int e = -4; e <= 5; ++e) {
+            const float zoom = std::ldexp(1.0F, e);
+            const std::uint32_t s = numberStepLog2(major, zoom, NEEDED, 0xFFFFFFFFU);
+            CAPTURE(major);
+            CAPTURE(zoom);
+            REQUIRE(s >= major);
+            REQUIRE(s < 31);
+            CHECK(std::ldexp(zoom, static_cast<int>(s)) >= NEEDED);  // fits
+            if (s > major) {
+                CHECK(std::ldexp(zoom, static_cast<int>(s) - 1) < NEEDED);  // one below does not
+            }
+            // A needed spacing of exactly 2^s x zoom fits at s; just above it needs one more.
+            const float exact = std::ldexp(zoom, static_cast<int>(s));
+            CHECK(numberStepLog2(major, zoom, exact, 0xFFFFFFFFU) == s);
+            CHECK(numberStepLog2(major, zoom, std::nextafter(exact, 1e30F), 0xFFFFFFFFU) == s + 1);
+        }
+    }
+    CHECK(numberStepLog2(3, 1, 8, 1000) == 3);  // the major step fits
+    CHECK(numberStepLog2(3, 1, 9, 1000) == 4);
+    CHECK(numberStepLog2(5, 0.01F, 50, 100) == 7);       // stops past the image size
+    CHECK(numberStepLog2(5, 0.01F, 50, 128) == 8);       // a step equal to the size goes on
+    CHECK(numberStepLog2(7, 0.01F, 50, 100) == 7);       // the major step already exceeds it
+    CHECK(numberStepLog2(1, 0, 50, 0x80000000U) == 31);  // the loop ends at 31
+    CHECK(numberStepLog2(1, 0, 50, 0xFFFFFFFFU) == 31);
+    CHECK(numberStepLog2(31, 0, 50, 0xFFFFFFFFU) == 31);
+    CHECK(numberStepLog2(0, 1, 0, 0) == 0);  // nothing needed
+    CHECK(numberStepLog2(0, 1, 5, 0) == 0);  // an empty image: the major step
+}
+
+TEST_CASE("view lines: pixelCentreAt") {
+    for (const float zoom : {0.125F, 0.5F, 1.0F, 2.0F, 8.0F, 32.0F}) {
+        for (const std::int32_t offset : {-500, -4, 0, 3, 100}) {
+            const AxisView axis{.offset = offset, .zoom = zoom, .size = 4096, .extent = 1000};
+            std::size_t bad = 0;
+            for (std::uint32_t c = 0; c < 4096; ++c) {
+                const float expected =
+                    static_cast<float>(offset) + ((static_cast<float>(c) + 0.5F) * zoom);
+                bad += pixelCentreAt(axis, c) == expected ? 0 : 1;
+            }
+            CAPTURE(zoom);
+            CAPTURE(offset);
+            CHECK(bad == 0);
+        }
+    }
+    const AxisView odd{.offset = 3, .zoom = 0.37F, .size = 4096, .extent = 1000};
+    std::size_t outside = 0;
+    for (std::uint32_t c = 0; c < odd.size; ++c) {
+        const float centre = pixelCentreAt(odd, c);
+        outside += boundaryAt(odd, c) < centre && centre < boundaryAt(odd, c + 1) ? 0 : 1;
+    }
+    CHECK(outside == 0);
+}
+
+TEST_CASE("view lines: pixelCentreAt is the three statements, not a fused multiply-add") {
+    const AxisView a{.offset = -1000, .zoom = 0.473F, .size = 3840, .extent = 1816};
+    std::size_t fused_differs = 0;
+    for (std::uint32_t c = 0; c < a.size; ++c) {
+        const float centre = static_cast<float>(c) + 0.5F;
+        const float product = centre * a.zoom;
+        const float b = static_cast<float>(a.offset) + product;
+        CHECK(pixelCentreAt(a, c) == b);
+        if (std::fma(centre, a.zoom, static_cast<float>(a.offset)) != b) {
+            ++fused_differs;
+        }
+    }
+    CHECK(fused_differs > 0);  // the inputs can tell a fused result from the three statements
 }

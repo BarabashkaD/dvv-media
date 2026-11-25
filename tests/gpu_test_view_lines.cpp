@@ -45,8 +45,12 @@ using dvv::media::lineAt;
 using dvv::media::LineHit;
 using dvv::media::LineLevel;
 using dvv::media::lineSpan;
+using dvv::media::numberStepLog2;
+using dvv::media::pixelCentreAt;
+using dvv::media::PixelRange;
 using dvv::media::PixelSpan;
 using dvv::media::tickLevel;
+using dvv::media::visiblePixels;
 using dvv::media::test::GpuTest;
 
 namespace {
@@ -62,16 +66,19 @@ struct ProbePush {
     std::array<std::array<std::uint32_t, 4>, LINE_LEVELS> levels{};  // stepLog2, t, drawn, halo
     std::uint32_t width = 0;
     float minimum = 0;
-    std::uint32_t pad0 = 0;
-    std::uint32_t pad1 = 0;
+    std::uint32_t majorStepLog2 = 0;  // numberStepLog2's major step
+    float neededSpacing = 0;          // numberStepLog2's needed spacing
 };
 static_assert(sizeof(ProbePush) == 80);
 
 // The probe's rows. Row r holds, for column i: 0 boundaryAt(k = i) (bits), 1 imageCoordinateAt(
 // pixel = i) (bits), 2 firstPixelOf(k = i), 3..10 lineSpan(k = i, t = 1..4) begin/end, 11..12
 // haloSpan(k = i, t = 2), 13..14 cursorSpan(c = i), 15..16 imageSpan, 17 lineAt(pixel = i) packed,
-// 18 tickLevel(k = i) (3: none), 19 levelVisible(stepLog2 = i, zoom, minimum).
-constexpr std::uint32_t ROWS = 20;
+// 18 tickLevel(k = i) (3: none), 19 levelVisible(stepLog2 = i, zoom, minimum), 20..22
+// visiblePixels of the axis panned by i pixels (offset - i, wrapping): valid, first, last, 23
+// numberStepLog2(majorStepLog2, zoom x 2^(i mod 16 - 8), neededSpacing, size), 24
+// pixelCentreAt(c = i) (bits).
+constexpr std::uint32_t ROWS = 25;
 constexpr std::uint32_t PROBE_GROUP = 64;
 constexpr float MINIMUM_SPACING = 8;
 // The lines lineAt's allowance looks at on each side of the pixel's own (enough for every case's
@@ -120,6 +127,7 @@ struct Tally {
     std::size_t failures = 0;
     std::size_t coordinatesOff = 0;  // row 1 values that are not the mirror's bit for bit
     std::size_t hitsOpen = 0;        // lineAt pixels open to the allowance
+    std::size_t edgesOff = 0;        // visiblePixels values within the allowance
 };
 
 class Comparison {
@@ -146,8 +154,20 @@ public:
             const std::optional<std::size_t> tick = tickLevel(i, levels_);
             exactly(18, i, tick ? static_cast<std::uint32_t>(*tick) : 3U);
             exactly(19, i, levelVisible(i, axis_.zoom, MINIMUM_SPACING) ? 1U : 0U);
+            visible(i);
+            // Multiplication is correctly rounded on the GPU: these compare exactly at any zoom.
+            const float zoom = axis_.zoom * std::ldexp(1.0F, static_cast<int>(i % 16) - 8);
+            exactly(23, i, numberStepLog2(major_, zoom, needed_, axis_.size));
+            coordinate(24, i, pixelCentreAt(axis_, i), 0);
         }
         return tally_;
+    }
+
+    // numberStepLog2's inputs besides the zoom and the size.
+    Comparison& numberStep(std::uint32_t major, float needed) {
+        major_ = major;
+        needed_ = needed;
+        return *this;
     }
 
 private:
@@ -172,14 +192,62 @@ private:
     }
 
     // firstPixelOf(k) may move by one on the GPU when u at either pixel it tests is near k.
-    [[nodiscard]] bool fragile(std::uint32_t k) const {
+    [[nodiscard]] bool fragile(std::uint32_t k) const { return fragileOn(axis_, k); }
+
+    [[nodiscard]] bool fragileOn(const AxisView& axis, std::uint32_t k) const {
         if (strict_) {
             return false;
         }
-        const std::int32_t p = firstPixelOf(axis_, k);
+        const std::int32_t p = firstPixelOf(axis, k);
         const auto target = static_cast<float>(k);
-        return nearValue(imageCoordinateAt(axis_, p - 1), target) ||
-               nearValue(imageCoordinateAt(axis_, p), target);
+        return nearValue(imageCoordinateAt(axis, p - 1), target) ||
+               nearValue(imageCoordinateAt(axis, p), target);
+    }
+
+    // visiblePixels of the axis panned by i pixels. Its ends test boundaryAt, which is exact; off
+    // a dyadic zoom the image point at a cut end, near a whole number, may floor or ceil to the
+    // next image pixel (first or last moves by one), and an end of the image span may move by one
+    // pixel, so a span of at most one pixel may appear or vanish. These divides take integer
+    // numerators that row 1 does not sample: their allowance is tallied apart.
+    void visible(std::uint32_t i) {
+        AxisView panned = axis_;
+        panned.offset = std::bit_cast<std::int32_t>(std::bit_cast<std::uint32_t>(axis_.offset) - i);
+        const std::optional<PixelRange> expected = visiblePixels(panned);
+        const PixelSpan image = imageSpan(panned);
+        const auto edge = [&](std::int32_t pixel) {
+            const float shifted = static_cast<float>(pixel) - static_cast<float>(panned.offset);
+            return nearInteger(shifted / panned.zoom);
+        };
+        const bool valid = at(20, i) != 0;
+        if (valid == expected.has_value() &&
+            (!valid || (at(21, i) == expected->first && at(22, i) == expected->last))) {
+            tally_.exact += 3;
+            return;
+        }
+        const auto extent = static_cast<std::int32_t>(std::min(panned.extent, 0x7FFFFFFFU));
+        // An end may move only where the viewport cuts it at a near-whole image point.
+        const auto near = [&](std::uint32_t row, std::uint32_t want, bool cut, std::int32_t pixel) {
+            const std::uint32_t got = at(row, i);
+            return got == want || (cut && edge(pixel) && std::abs(std::int64_t{got} - want) <= 1);
+        };
+        const bool cut_begin = dvv::media::boundaryAt(panned, 0) < 0.0F;
+        const bool cut_end =
+            dvv::media::boundaryAt(panned, panned.size) > static_cast<float>(extent);
+        const std::int64_t length = std::int64_t{image.end} - image.begin;
+        const bool allowed =
+            !strict_ &&
+            (valid == expected.has_value()
+                 ? near(21, expected->first, cut_begin, 0) &&
+                       near(22, expected->last, cut_end, extent)
+                 : (fragileOn(panned, 0) || fragileOn(panned, panned.size)) && length <= 1);
+        if (allowed) {
+            tally_.allowance += 3;
+            tally_.edgesOff += 3;
+            return;
+        }
+        fail(20, i, expected ? 1U : 0U);
+        fail(21, i, expected ? expected->first : 0U);
+        fail(22, i, expected ? expected->last : 0U);
     }
 
     // lineAt(pixel) may differ on the GPU only where its window can move (q near an integer for a
@@ -221,7 +289,7 @@ private:
         return false;
     }
 
-    // Row 0 and 1 floats: NaNs equal; row 1 may be `allowed` ulp off.
+    // Rows 0, 1 and 24 (floats): NaNs equal, whatever their bits; row 1 may be `allowed` ulp off.
     void coordinate(std::uint32_t row, std::uint32_t i, float expected, std::int64_t allowed) {
         const float got = std::bit_cast<float>(at(row, i));
         const std::int64_t distance = ulpDistance(got, expected);
@@ -292,6 +360,8 @@ private:
     std::span<const std::uint32_t> rows_;
     std::uint32_t width_;
     bool strict_;
+    std::uint32_t major_ = 0;
+    float needed_ = 0;
     Tally tally_;
 };
 
@@ -362,7 +432,7 @@ TEST_CASE_FIXTURE(GpuTest, "view lines: the shader matches the C++ mirror") {
         Levels levels;
         bool strict = false;  // no allowance at all, at any zoom
     };
-    const std::array<Case, 16> cases{{
+    const std::array<Case, 17> cases{{
         {{.offset = 10, .zoom = 4, .size = 8, .extent = 100}, levels},
         {{.offset = -6, .zoom = 4, .size = 8, .extent = 20}, levels},
         {{.offset = 3, .zoom = 0.473F, .size = 3840, .extent = 1816}, levels},
@@ -371,6 +441,8 @@ TEST_CASE_FIXTURE(GpuTest, "view lines: the shader matches the C++ mirror") {
         {{.offset = 3, .zoom = 1.9F, .size = 200, .extent = 400}, dense},
         // firstPixelOf's correction moves the estimate down and up here (about 100 and 140 k).
         {{.offset = 3, .zoom = 0.3F, .size = 4096, .extent = 4096}, levels},
+        // The whole picture at a Fit of 1/3 whose last pixel starts past the span's last centre.
+        {{.offset = 293, .zoom = 1.0F / 3.0F, .size = 4000, .extent = 1920}, levels},
         // No image: zoom 0, NaN or infinite, size 0, extent 0.
         {{.offset = 0, .zoom = 0, .size = 8, .extent = 16}, levels, true},
         {{.offset = 0, .zoom = NOT_A_NUMBER, .size = 8, .extent = 16}, levels, true},
@@ -384,13 +456,17 @@ TEST_CASE_FIXTURE(GpuTest, "view lines: the shader matches the C++ mirror") {
         {{.offset = -3, .zoom = 2, .size = 16, .extent = 40}, edges},
     }};
     Tally total;
+    std::uint32_t index = 0;
     for (const auto& [axis, case_levels, strict] : cases) {
         ProbePush push{.offset = axis.offset,
                        .zoom = axis.zoom,
                        .size = axis.size,
                        .extent = axis.extent,
                        .width = std::max(axis.size + 2, axis.extent),
-                       .minimum = MINIMUM_SPACING};
+                       .minimum = MINIMUM_SPACING,
+                       .majorStepLog2 = index % 6,
+                       .neededSpacing = 37.5F + static_cast<float>(index)};
+        ++index;
         for (std::size_t l = 0; l < LINE_LEVELS; ++l) {
             push.levels[l] = {case_levels[l].stepLog2, case_levels[l].thickness,
                               case_levels[l].drawn ? 1U : 0U, case_levels[l].halo ? 1U : 0U};
@@ -399,12 +475,15 @@ TEST_CASE_FIXTURE(GpuTest, "view lines: the shader matches the C++ mirror") {
         CAPTURE(axis.offset);
         CAPTURE(axis.zoom);
         const Tally tally =
-            Comparison(axis, case_levels, rows, push.width, strict || dyadic(axis.zoom)).run();
+            Comparison(axis, case_levels, rows, push.width, strict || dyadic(axis.zoom))
+                .numberStep(push.majorStepLog2, push.neededSpacing)
+                .run();
         CHECK(tally.failures == 0);
         // Where the GPU's u equals the mirror's everywhere, every value must equal it too: the
-        // allowance is only for a divide that differs.
+        // allowance is only for a divide that differs. visiblePixels divides integer numerators
+        // that row 1 does not sample, so its allowance does not count here.
         if (tally.coordinatesOff == 0) {
-            CHECK(tally.allowance == 0);
+            CHECK(tally.allowance == tally.edgesOff);
         }
         MESSAGE("zoom ", axis.zoom, ", offset ", axis.offset, ": ", tally.exact, " exact, ",
                 tally.allowance, " within the allowance, ", tally.hitsOpen,

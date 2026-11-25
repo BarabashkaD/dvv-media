@@ -1,11 +1,11 @@
 #pragma once
 
 // Lines on the shown image: which image pixel a viewport pixel shows, where the lines, halos and
-// cursor markers are drawn, the nested line levels, the picture region, the rulers' rects and the
-// nearest tick. One rule, written once: a GPU shader that draws the same lines or the same picture
-// mirrors these functions statement by statement, and the CPU references and tests use exactly
-// these. CPU helpers that no shader mirrors: axisX, axisY, linesInView, and the picture region and
-// everything after it.
+// cursor markers are drawn, the nested line levels, the visible image pixels, a pixel's centre and
+// the ruler's number step, the picture region, the rulers' rects and the nearest tick. One rule,
+// written once: a GPU shader that draws the same lines or the same picture mirrors these functions
+// statement by statement, and the CPU references and tests use exactly these. CPU helpers that no
+// shader mirrors: axisX, axisY, linesInView, and the picture region and everything after it.
 //
 // Units as in view.h: an AxisView is one axis of a ViewTransform, in viewport pixels and image
 // pixels. Image pixel i covers [i, i + 1) and viewport pixel p covers [p, p + 1). The one mapping
@@ -90,6 +90,32 @@ struct PixelSpan {  // [begin, end) in viewport pixels
 // min keeps it inside the image at its end, like the outer edge line, so a cursor pixel whose span
 // reaches into the viewport is never an empty marker.
 [[nodiscard]] PixelSpan cursorSpan(const AxisView& axis, std::uint32_t c) noexcept;
+
+struct PixelRange {  // image pixels, both inclusive
+    std::uint32_t first = 0, last = 0;
+    bool operator==(const PixelRange&) const = default;
+};
+
+// The first and last image pixel the axis shows, a partly visible one counted: the image pixels
+// that overlap the visible extent [max(0, b(0)), min(extent, b(size))), b = boundaryAt. An end the
+// viewport cuts gives floor((0 - float(offset)) / zoom) or ceil((float(extent) - float(offset)) /
+// zoom) - 1, one float operation per statement, kept in [0, size - 1]; an end it does not cut
+// (b(0) >= 0, b(size) <= extent) gives 0 or size - 1, so the whole picture gives 0 and size - 1 at
+// any zoom. At a zoom below 1 these can be image pixels that no viewport pixel's centre shows;
+// imagePixelAt of every pixel in the image span lies between them, and first <= last. nullopt when
+// the axis shows no image or the image span is empty.
+[[nodiscard]] std::optional<PixelRange> visiblePixels(const AxisView& axis) noexcept;
+
+// The viewport position (viewport pixels, as boundaryAt) of the centre of image pixel c:
+// float(offset) + (float(c) + 0.5) x zoom, one float operation per statement in a file built
+// without FP contraction (the shader marks it precise), as boundaryAt. Not clipped.
+[[nodiscard]] float pixelCentreAt(const AxisView& axis, std::uint32_t c) noexcept;
+
+// log2 of a ruler's number step: the smallest s >= major_step_log2 with
+// float(1 << s) x zoom >= needed_spacing (viewport pixels), but no larger than the first s whose
+// step 1 << s exceeds image_size, and at most 31. A major_step_log2 above 31 is returned as it is.
+[[nodiscard]] std::uint32_t numberStepLog2(std::uint32_t major_step_log2, float zoom,
+                                           float needed_spacing, std::uint32_t image_size) noexcept;
 
 // float(1 << stepLog2) * zoom >= minimum, all in viewport pixels (2^stepLog2 as an exact float).
 [[nodiscard]] bool levelVisible(std::uint32_t step_log2, float zoom, float minimum) noexcept;
