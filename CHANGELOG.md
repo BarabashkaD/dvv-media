@@ -6,6 +6,23 @@ the dvv rules: compatible = the same 0.minor and at least the minimum version; a
 unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
 notes (there are no GitHub Releases).
 
+## [0.7.0] - 2026-11-26
+
+### Added
+- `HiddenComponents` and `ChromaFill` (`dvv/media/types.h`), and `ViewSpec::hidden`, the last
+  member of `ViewSpec`: the colour components the display view replaces before its colour matrix.
+  A hidden Y, R, G or B becomes code 0; a hidden U or V becomes the mid code 2^(bits - 1)
+  (`ChromaFill::Mid`) or 0 (`ChromaFill::Zero`). Alpha is never hidden. Only the display view may
+  hide: any other view with a non-default `hidden` is `Errc::Unsupported`. The store keeps one
+  display frame per canonical hidden set and makes a new set by running only ToDisplay again.
+- `hasChroma(format, resolved)` (`dvv/media/display.h`): whether c1 and c2 are colour-difference
+  components (a YUV format whose resolved matrix is not `rgb`).
+
+### Changed
+- `toDisplayReference()` takes a `HiddenComponents` as its last parameter (default: nothing
+  hidden).
+- With the default (nothing hidden) every view and every display pixel is unchanged.
+
 ## [0.6.0] - 2026-11-26
 
 ### Changed

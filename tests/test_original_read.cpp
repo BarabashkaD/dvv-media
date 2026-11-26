@@ -106,14 +106,24 @@ TEST_CASE("original read: view helpers") {
                                                     .primaries = dvv::media::Primaries::Bt709});
             const Domain host{};
             CHECK(dvv::media::originalView(desc, HOST_PLANES, host) ==
-                  ViewSpec{desc.format, desc.colour, LayoutPolicy::Any, HOST_PLANES, host, 0});
+                  ViewSpec{.format = desc.format,
+                           .colour = desc.colour,
+                           .layout = LayoutPolicy::Any,
+                           .binding = HOST_PLANES,
+                           .domain = host});
             CHECK(dvv::media::planesView(desc, HOST_PLANES, host) ==
-                  ViewSpec{dvv::media::unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any,
-                           HOST_PLANES, host, 0});
+                  ViewSpec{.format = dvv::media::unpackedFormat(desc.format),
+                           .colour = desc.colour,
+                           .layout = LayoutPolicy::Any,
+                           .binding = HOST_PLANES,
+                           .domain = host});
             const Domain device{MemKind::DeviceLocal, dvv::gpu::DeviceId{0}, 1};
             CHECK(dvv::media::planesView(desc, vulkan::IMAGE, device) ==
-                  ViewSpec{dvv::media::unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any,
-                           vulkan::IMAGE, device, 0});
+                  ViewSpec{.format = dvv::media::unpackedFormat(desc.format),
+                           .colour = desc.colour,
+                           .layout = LayoutPolicy::Any,
+                           .binding = vulkan::IMAGE,
+                           .domain = device});
         }
     }
 }

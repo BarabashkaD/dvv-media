@@ -10,6 +10,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "canonical_hidden.h"
 #include "display_alpha.h"
 #include "dvv/base/error.h"
 #include "dvv/media/display.h"
@@ -41,8 +42,21 @@ std::uint32_t transferCode(TransferFn transfer) noexcept {
 
 }  // namespace
 
+HiddenComponents canonicalHidden(const FrameDesc& desc, HiddenComponents hidden) {
+    if (formatDesc(desc.format).componentCount < 3) {
+        hidden.components[1] = false;
+        hidden.components[2] = false;
+    }
+    const bool chroma_hidden = hidden.components[1] || hidden.components[2];
+    if (!chroma_hidden || !hasChroma(desc.format, resolveColour(desc).params)) {
+        hidden.chroma = ChromaFill::Mid;
+    }
+    return hidden;
+}
+
 Result<ToDisplayPush> toDisplayPush(FormatId format, const ColourParams& resolved,
-                                    std::uint32_t width, std::uint32_t height) {
+                                    std::uint32_t width, std::uint32_t height,
+                                    HiddenComponents hidden) {
     const PixelFormatDesc& d = formatDesc(format);
     if (d.componentCount == 0 || d.componentCount > MAX_COMPONENTS) {
         return makeError(Errc::Internal, std::format("ToDisplay: unknown format {}", format));
@@ -71,6 +85,18 @@ Result<ToDisplayPush> toDisplayPush(FormatId format, const ColourParams& resolve
     push.componentCount = d.componentCount;
     push.transfer = transferCode(resolved.transfer);
     push.alphaScale = alphaScaleOf(format);
+    // Hidden colour components (the shader's rule: Y, or Y U V / R G B); the alpha is never hidden.
+    const std::size_t colour_count = d.componentCount >= 3 ? 3 : 1;
+    const bool mid_chroma = hidden.chroma == ChromaFill::Mid && hasChroma(format, resolved);
+    for (std::size_t k = 0; k < colour_count; ++k) {
+        if (!hidden.components[k]) {
+            continue;
+        }
+        push.hiddenMask |= 1U << k;
+        if (k >= 1 && mid_chroma) {
+            push.chromaFill |= (1U << (d.components[k].bits - 1U)) << (16U * (k - 1));
+        }
+    }
     return push;
 }
 

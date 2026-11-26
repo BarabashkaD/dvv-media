@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "canonical_hidden.h"
 #include "converters.h"
 #include "dvv/base/error.h"
 #include "dvv/base/executor.h"
@@ -68,13 +69,25 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
     if (view.downscaleLog2 != 0) {
         text += std::format(", downscale log2 {}", static_cast<unsigned>(view.downscaleLog2));
     }
+    if (view.hidden != HiddenComponents{}) {
+        text += ", hidden";
+        for (std::size_t k = 0; k < view.hidden.components.size(); ++k) {
+            if (view.hidden.components[k]) {
+                text += std::format(" c{}", k);
+            }
+        }
+        if (view.hidden.chroma == ChromaFill::Zero) {
+            text += ", chroma zero";
+        }
+    }
     text += ')';
     return text;
 }
 
 // The graph state of a view of the key's frame: nullopt for a format other than the original, its
 // unpacked form and the display format, a colour other than the frame's (the display format: other
-// than displayColour()), a downscale, or a domain the store has no tier for.
+// than displayColour()), a downscale, a hidden set on a view other than the display view, or a
+// domain the store has no tier for.
 [[nodiscard]] std::optional<detail::StateKey> stateOf(const detail::Record& record,
                                                       std::span<const detail::Tier> tiers,
                                                       const ViewSpec& view) noexcept {
@@ -87,6 +100,9 @@ constexpr std::size_t TEST_DEVICE_BUDGET = std::size_t{1} << 30U;
         }
         return detail::StateKey{
             .unpacked = false, .binding = view.binding, .kind = view.domain.kind, .display = true};
+    }
+    if (view.hidden != HiddenComponents{}) {  // only the display view hides
+        return std::nullopt;
     }
     bool unpacked = false;
     if (view.format == record.desc.format) {
@@ -175,8 +191,11 @@ Result<std::shared_ptr<HostFrame>> ProduceContext::allocateHost(const FrameDesc&
         settle();
     }
     DVV_TRY(platform::AlignedBuffer buffer, std::move(allocated));
-    const ViewSpec view{desc.format, desc.colour,          LayoutPolicy::Tight,
-                        HOST_PLANES, store_->hostDomain(), 0};
+    const ViewSpec view{.format = desc.format,
+                        .colour = desc.colour,
+                        .layout = LayoutPolicy::Tight,
+                        .binding = HOST_PLANES,
+                        .domain = store_->hostDomain()};
     return std::make_shared<HostFrame>(FrameStore::frameKey<HostFrame>(store_->objectId()), desc,
                                        view, std::move(buffer), capacity, data_offset);
 }
@@ -196,8 +215,11 @@ Result<FrameRef> ProduceContext::publish(std::shared_ptr<IFrame> frame) {
                                      "description than the source's",
                                      key_.index, key_.origin));
     }
-    const ViewSpec original{desc_.format, desc_.colour,         LayoutPolicy::Tight,
-                            HOST_PLANES,  store_->hostDomain(), 0};
+    const ViewSpec original{.format = desc_.format,
+                            .colour = desc_.colour,
+                            .layout = LayoutPolicy::Tight,
+                            .binding = HOST_PLANES,
+                            .domain = store_->hostDomain()};
     const std::span<const ViewSpec> views = frame->nativeViews();
     if (std::ranges::find(views, original) == views.end()) {
         return makeError(Errc::Internal,
@@ -656,7 +678,7 @@ detail::LeaseCore FrameStore::shareLease(const detail::LeaseCore& core,
     return shared;
 }
 
-Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const ViewSpec& want,
+Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, ViewSpec want,
                                                    LeaseKind /*kind*/) {
     detail::StoreState& s = *state_;
     auto record = s.records.find(key);
@@ -670,6 +692,11 @@ Result<detail::Prepared> FrameStore::prepareLocked(const FrameKey& key, const Vi
                 .first;
     }
     detail::Record& rec = record->second;
+    // The display want in its canonical form: requests that hide alike share one entry, and the
+    // lease reports the set that was applied.
+    if (isDisplay(want.format)) {
+        want.hidden = detail::canonicalHidden(rec.desc, want.hidden);
+    }
     auto [entry, view] = detail::selectEntry(rec.entries, want, rec.desc.format);
     if (entry) {
         detail::Prepared prepared;
@@ -753,6 +780,11 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
         const std::span<const ViewSpec> views =
             published ? std::span<const ViewSpec>(entry->views) : std::span(&entry->planned, 1);
         for (const ViewSpec& view : views) {
+            // A display entry of another hidden set is no source: the display state is a sink, and
+            // it would be a zero-step path to the want.
+            if (isDisplay(view.format) && view.hidden != want.hidden) {
+                continue;
+            }
             if (const std::optional<detail::StateKey> state = stateOf(record, s.tiers, view)) {
                 sources.push_back(detail::PlanSource{
                     .state = *state, .layout = view.layout, .fidelity = entry->fidelity});
@@ -811,14 +843,14 @@ Result<detail::Plan> FrameStore::planLocked(const FrameKey& key, detail::Record&
         auto output = std::make_shared<detail::Entry>();
         output->key = key;
         output->desc = record.desc;
-        output->planned =
-            ViewSpec{state.display ? displayFormat()
-                                   : (state.unpacked ? record.unpacked : record.desc.format),
-                     state.display ? displayColour() : record.desc.colour,
-                     converter != nullptr ? converter->outputLayout() : LayoutPolicy::Tight,
-                     state.binding,
-                     s.tiers[tier].domain,
-                     0};
+        output->planned = ViewSpec{
+            .format = state.display ? displayFormat()
+                                    : (state.unpacked ? record.unpacked : record.desc.format),
+            .colour = state.display ? displayColour() : record.desc.colour,
+            .layout = converter != nullptr ? converter->outputLayout() : LayoutPolicy::Tight,
+            .binding = state.binding,
+            .domain = s.tiers[tier].domain,
+            .hidden = state.display ? want.hidden : HiddenComponents{}};
         output->fidelity = converter != nullptr
                                ? detail::weaker(input_fidelity, converter->fidelity())
                                : Fidelity::Exact;
@@ -1237,12 +1269,13 @@ Result<ReadLease> FrameStore::adopt(const FrameKey& key, std::shared_ptr<IFrame>
     const std::span<const ViewSpec> views = frame->nativeViews();
     const bool views_fit = !views.empty() && std::ranges::all_of(views, [&](const ViewSpec& view) {
         return view.format == desc.format && view.colour == desc.colour &&
-               tierOf(view.domain).has_value();
+               view.hidden == HiddenComponents{} && tierOf(view.domain).has_value();
     });
     if (!views_fit) {
         return makeError(Errc::Internal,
                          std::format("adopt: frame {} of origin {} needs native views of its own "
-                                     "format and colour in the store's domains",
+                                     "format and colour, with nothing hidden, in the store's "
+                                     "domains",
                                      key.index, key.origin));
     }
     const ViewSpec view = views[0];
@@ -1395,12 +1428,19 @@ std::vector<LeaseInfo> FrameStore::outstandingLeases() const {
 }
 
 ViewSpec originalView(const FrameDesc& desc, BindingKind binding, Domain domain) {
-    return ViewSpec{desc.format, desc.colour, LayoutPolicy::Any, binding, domain, 0};
+    return ViewSpec{.format = desc.format,
+                    .colour = desc.colour,
+                    .layout = LayoutPolicy::Any,
+                    .binding = binding,
+                    .domain = domain};
 }
 
 ViewSpec planesView(const FrameDesc& desc, BindingKind binding, Domain domain) {
-    return ViewSpec{
-        unpackedFormat(desc.format), desc.colour, LayoutPolicy::Any, binding, domain, 0};
+    return ViewSpec{.format = unpackedFormat(desc.format),
+                    .colour = desc.colour,
+                    .layout = LayoutPolicy::Any,
+                    .binding = binding,
+                    .domain = domain};
 }
 
 }  // namespace dvv::media

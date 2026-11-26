@@ -1,13 +1,17 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "alpha_formats.h"
 #include "dvv/base/error.h"
@@ -73,6 +77,32 @@ media::FrameDesc frame(std::string_view format, std::uint32_t width, std::uint32
 void checkFormatError(const dvv::Result<void>& result) {
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == dvv::Errc::Format);
+}
+
+using Rgba = std::array<float, 4>;
+using media::ChromaFill;
+using media::HiddenComponents;
+
+// Bit-exact equality of two references (also tells -0 from +0 and compares NaNs).
+void checkSame(const Rgba& actual, const Rgba& expected) {
+    CHECK(std::bit_cast<std::array<std::uint32_t, 4>>(actual) ==
+          std::bit_cast<std::array<std::uint32_t, 4>>(expected));
+}
+
+ColourParams resolvedOf(media::FormatId format, const ColourParams& colour = {}) {
+    const media::FrameDesc desc{
+        .format = format, .colour = media::internColour(colour), .width = 4, .height = 4};
+    return media::resolveColour(desc).params;
+}
+
+Rgba reference(media::FormatId format, const ColourParams& resolved,
+               std::initializer_list<std::uint16_t> codes, HiddenComponents hidden = {}) {
+    const std::vector<std::uint16_t> values(codes);
+    return media::toDisplayReference(format, resolved, values, hidden);
+}
+
+HiddenComponents hide(bool c0, bool c1, bool c2, ChromaFill chroma = ChromaFill::Mid) {
+    return HiddenComponents{.components = {c0, c1, c2}, .chroma = chroma};
 }
 
 }  // namespace
@@ -624,5 +654,180 @@ TEST_SUITE("display") {
         CHECK(std::isinf(media::halfToFloat(0xFC00)));
         CHECK(std::signbit(media::halfToFloat(0x8000)));
         CHECK(std::isnan(media::halfToFloat(0x7E00)));
+    }
+    TEST_CASE("hidden: hasChroma per model and matrix") {
+        const auto resolved = [](std::string_view format, const ColourParams& colour) {
+            const media::FrameDesc desc{.format = idOf(format),
+                                        .colour = media::internColour(colour),
+                                        .width = 4,
+                                        .height = 4};
+            return media::resolveColour(desc).params;
+        };
+        CHECK(media::hasChroma(idOf("yuv420p"), resolved("yuv420p", {})));
+        CHECK_FALSE(
+            media::hasChroma(idOf("yuv444p"), resolved("yuv444p", {.matrix = ColourMatrix::Rgb})));
+        CHECK_FALSE(media::hasChroma(idOf("rgb24"), resolved("rgb24", {})));
+        CHECK_FALSE(media::hasChroma(idOf("gray"), resolved("gray", {})));
+    }
+
+    TEST_CASE("hidden: toDisplayReference with nothing hidden keeps the values from before") {
+        // Expected words captured from the reference before the hidden set existed. The tolerance
+        // only allows for libm differences between platforms.
+        const auto ya8 = media::test::loadFormat(media::test::YA8_JSON);
+        REQUIRE_MESSAGE(ya8.has_value(), media::test::messageOf(ya8));
+        struct Golden {
+            media::FormatId format;
+            ColourParams colour;
+            std::vector<std::uint16_t> codes;
+            std::array<std::uint32_t, 4> words;
+        };
+        const std::array<Golden, 6> cases{
+            Golden{idOf("yuv420p"),
+                   {.range = ColourRange::Limited},
+                   {120, 90, 200},
+                   {0x3F74862BU, 0x3DABF12EU, 0x3C49CE9EU, 0x3F800000U}},
+            Golden{idOf("p010le"),
+                   {},
+                   {500, 480, 560},
+                   {0x3E8BB5FEU, 0x3E2F50CEU, 0x3E082EC9U, 0x3F800000U}},
+            Golden{idOf("p016le"),
+                   {},
+                   {30000, 31000, 35000},
+                   {0x3E58760CU, 0x3E165763U, 0x3DE9C565U, 0x3F800000U}},
+            Golden{idOf("gray16le"),
+                   {},
+                   {40000},
+                   {0x3E9C8F19U, 0x3E9C8F19U, 0x3E9C8F19U, 0x3F800000U}},
+            Golden{idOf("rgba"),
+                   {},
+                   {200, 150, 100, 77},
+                   {0x3F0EE500U, 0x3E8F4845U, 0x3DD8966DU, 0x3E9A9A9BU}},
+            Golden{*ya8, {}, {180, 77}, {0x3EDDEF97U, 0x3EDDEF97U, 0x3EDDEF97U, 0x3E9A9A9BU}}};
+        for (const Golden& golden : cases) {
+            CAPTURE(media::formatDesc(golden.format).name);
+            const ColourParams resolved = resolvedOf(golden.format, golden.colour);
+            const auto expected = std::bit_cast<Rgba>(golden.words);
+            const std::array<Rgba, 2> results{
+                media::toDisplayReference(golden.format, resolved, golden.codes),
+                media::toDisplayReference(golden.format, resolved, golden.codes,
+                                          HiddenComponents{})};
+            for (const Rgba& actual : results) {
+                for (std::size_t i = 0; i < 4; ++i) {
+                    CAPTURE(i);
+                    checkNear(actual[i], expected[i], 1e-6);
+                }
+            }
+        }
+    }
+
+    TEST_CASE("hidden: toDisplayReference replaces the hidden codes before the matrix") {
+        SUBCASE("yuv420p limited: Y to 0, U and V to the mid code or 0") {
+            const media::FormatId yuv = idOf("yuv420p");
+            const ColourParams resolved = resolvedOf(yuv, {.range = ColourRange::Limited});
+            checkSame(reference(yuv, resolved, {120, 90, 200}, hide(true, false, false)),
+                      reference(yuv, resolved, {0, 90, 200}));
+            const Rgba mid = reference(yuv, resolved, {120, 90, 200}, hide(false, true, true));
+            checkSame(mid, reference(yuv, resolved, {120, 128, 128}));
+            checkNear(mid[0], mid[1], 1e-6);
+            checkNear(mid[1], mid[2], 1e-6);
+            const Rgba zero =
+                reference(yuv, resolved, {120, 90, 200}, hide(false, true, true, ChromaFill::Zero));
+            checkSame(zero, reference(yuv, resolved, {120, 0, 0}));
+            CHECK(zero[1] > zero[0]);
+            CHECK(zero[1] > zero[2]);
+        }
+        SUBCASE("yuv420p10le: the mid code is 512") {
+            const media::FormatId yuv = idOf("yuv420p10le");
+            const ColourParams resolved = resolvedOf(yuv);
+            checkSame(reference(yuv, resolved, {600, 100, 900}, hide(false, true, true)),
+                      reference(yuv, resolved, {600, 512, 512}));
+        }
+        SUBCASE("p010le: the mid code is 512 (high-bit aligned, counted in significant bits)") {
+            const media::FormatId p010 = idOf("p010le");
+            const ColourParams resolved = resolvedOf(p010);
+            checkSame(reference(p010, resolved, {500, 100, 900}, hide(false, true, true)),
+                      reference(p010, resolved, {500, 512, 512}));
+        }
+        SUBCASE("p016le: the mid code is 32768") {
+            const media::FormatId p016 = idOf("p016le");
+            const ColourParams resolved = resolvedOf(p016);
+            checkSame(reference(p016, resolved, {30000, 1000, 60000}, hide(false, true, true)),
+                      reference(p016, resolved, {30000, 32768, 32768}));
+        }
+        SUBCASE("rgb24: each hidden channel is 0, the others are unchanged") {
+            const media::FormatId rgb = idOf("rgb24");
+            const ColourParams resolved = resolvedOf(rgb);
+            const Rgba shown = reference(rgb, resolved, {200, 150, 100});
+            for (unsigned set = 1; set < 8; ++set) {
+                CAPTURE(set);
+                const HiddenComponents hidden =
+                    hide((set & 1U) != 0, (set & 2U) != 0, (set & 4U) != 0, ChromaFill::Mid);
+                const Rgba result = reference(rgb, resolved, {200, 150, 100}, hidden);
+                for (std::size_t k = 0; k < 3; ++k) {
+                    CAPTURE(k);
+                    if (hidden.components[k]) {
+                        CHECK(result[k] == 0.0F);
+                    } else {
+                        CHECK(result[k] == shown[k]);
+                    }
+                }
+                CHECK(result[3] == shown[3]);
+            }
+        }
+        SUBCASE("gray: only c0 counts") {
+            const media::FormatId gray = idOf("gray");
+            const ColourParams resolved = resolvedOf(gray);
+            checkSame(reference(gray, resolved, {180}, hide(true, false, false)),
+                      reference(gray, resolved, {0}));
+            checkSame(reference(gray, resolved, {180}, hide(false, true, true)),
+                      reference(gray, resolved, {180}));
+        }
+        SUBCASE("yuv444p with matrix Rgb: c1 and c2 are colours, hidden to 0 under both fills") {
+            const media::FormatId gbr = idOf("yuv444p");
+            const ColourParams resolved = resolvedOf(gbr, {.matrix = ColourMatrix::Rgb});
+            for (const ChromaFill fill : {ChromaFill::Mid, ChromaFill::Zero}) {
+                CAPTURE(static_cast<int>(fill));
+                const Rgba no_c1 =
+                    reference(gbr, resolved, {120, 90, 200}, hide(false, true, false, fill));
+                const Rgba no_c2 =
+                    reference(gbr, resolved, {120, 90, 200}, hide(false, false, true, fill));
+                CHECK(no_c1[2] == reference(gbr, resolved, {120, 0, 200})[2]);
+                CHECK(no_c2[0] == reference(gbr, resolved, {120, 90, 0})[0]);
+                checkSame(no_c1, reference(gbr, resolved, {120, 0, 200}));
+                checkSame(no_c2, reference(gbr, resolved, {120, 90, 0}));
+            }
+        }
+    }
+
+    TEST_CASE("hidden: toDisplayReference never hides alpha") {
+        const auto ya8 = media::test::loadFormat(media::test::YA8_JSON);
+        REQUIRE_MESSAGE(ya8.has_value(), media::test::messageOf(ya8));
+        const std::array<std::pair<media::FormatId, std::vector<std::uint16_t>>, 2> cases{
+            std::pair{idOf("rgba"), std::vector<std::uint16_t>{200, 150, 100, 77}},
+            std::pair{*ya8, std::vector<std::uint16_t>{180, 77}}};
+        for (const auto& [format, codes] : cases) {
+            CAPTURE(media::formatDesc(format).name);
+            const ColourParams resolved = resolvedOf(format);
+            const float alpha = media::toDisplayReference(format, resolved, codes)[3];
+            CHECK(alpha < 1.0F);
+            for (unsigned set = 0; set < 16; ++set) {
+                CAPTURE(set);
+                const HiddenComponents hidden =
+                    hide((set & 1U) != 0, (set & 2U) != 0, (set & 4U) != 0,
+                         (set & 8U) != 0 ? ChromaFill::Zero : ChromaFill::Mid);
+                CHECK(media::toDisplayReference(format, resolved, codes, hidden)[3] == alpha);
+            }
+        }
+    }
+
+    TEST_CASE("hidden: ya8 has no c1 or c2, so hiding them leaves the colour as it is") {
+        const auto ya8 = media::test::loadFormat(media::test::YA8_JSON);
+        REQUIRE_MESSAGE(ya8.has_value(), media::test::messageOf(ya8));
+        const ColourParams resolved = resolvedOf(*ya8);
+        const Rgba shown = reference(*ya8, resolved, {180, 77});
+        for (const ChromaFill fill : {ChromaFill::Mid, ChromaFill::Zero}) {
+            CAPTURE(static_cast<int>(fill));
+            checkSame(reference(*ya8, resolved, {180, 77}, hide(false, true, true, fill)), shown);
+        }
     }
 }

@@ -53,6 +53,11 @@ struct ResolvedColour {
 // defaultRange(model). The primaries are information only (no gamut conversion).
 [[nodiscard]] ResolvedColour resolveColour(const FrameDesc& desc, FileHint hint = {});
 
+// Whether c1 and c2 of `format` are colour-difference components (U, V) under `resolved`: a Yuv
+// format whose matrix is not Rgb. False for RGB and gray formats and for a Yuv-layout format with
+// matrix Rgb (FFmpeg's AVCOL_SPC_RGB: its planes hold G, B and R).
+[[nodiscard]] bool hasChroma(FormatId format, const ColourParams& resolved) noexcept;
+
 // rgb' = matrix * (c0, c1, c2) + offset over the format's component code values (canonical
 // component order: Y U V or R G B; gray uses c0). Row-major 3x3. Folds range normalisation, the
 // YUV -> R'G'B' matrix, component order and gray.
@@ -63,12 +68,15 @@ struct DisplayAffine {
 [[nodiscard]] DisplayAffine displayAffine(FormatId format, const ColourParams& resolved);
 
 // CPU reference of ToDisplay for one pixel. `code_values` in component order; a missing colour
-// entry counts as 0. Returns linear-light RGB (primaries not converted), each in [0, 1], and the
-// frame's alpha: straight (not premultiplied), full range (also in limited-range YUV), in [0, 1];
-// 1 for a format without an A component or when the A entry is missing.
-[[nodiscard]] std::array<float, 4> toDisplayReference(
-    FormatId format, const ColourParams& resolved,
-    std::span<const std::uint16_t> code_values) noexcept;
+// entry counts as 0. The codes of the `hidden` colour components are replaced before the affine
+// map: by 0, except c1 and c2 of a format with chroma (hasChroma) under ChromaFill::Mid, which get
+// the mid code 2^(bits - 1). Alpha is never hidden. Returns linear-light RGB (primaries not
+// converted), each in [0, 1], and the frame's alpha: straight (not premultiplied), full range
+// (also in limited-range YUV), in [0, 1]; 1 for a format without an A component or when the A
+// entry is missing.
+[[nodiscard]] std::array<float, 4> toDisplayReference(FormatId format, const ColourParams& resolved,
+                                                      std::span<const std::uint16_t> code_values,
+                                                      HiddenComponents hidden = {}) noexcept;
 
 // IEC 61966-2-1 OETF and its inverse, input clamped to [0, 1].
 [[nodiscard]] float srgbEncode(float linear) noexcept;

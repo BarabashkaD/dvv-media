@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -230,4 +231,177 @@ TEST_SUITE("store") {
         CHECK(contains(read.error().message, "never an original"));
         requireInvariants(*store);
     }
+}
+
+namespace {
+
+using dvv::media::ChromaFill;
+using dvv::media::HiddenComponents;
+using dvv::media::PinLease;
+
+HiddenComponents hide(bool c0, bool c1, bool c2, ChromaFill chroma = ChromaFill::Mid) {
+    return HiddenComponents{.components = {c0, c1, c2}, .chroma = chroma};
+}
+
+ViewSpec displayHiding(HiddenComponents hidden) {
+    ViewSpec view = dvv::media::displayView(DEVICE);
+    view.hidden = hidden;
+    return view;
+}
+
+std::string describe(const Result<ReadLease>& lease) {
+    return lease.has_value() ? std::string{} : lease.error().describe();
+}
+
+FakeConverter& fakeNamed(const std::vector<FakeConverter*>& fakes, std::string_view name) {
+    for (FakeConverter* fake : fakes) {
+        if (fake->name() == name) {
+            return *fake;
+        }
+    }
+    FAIL("no fake converter ", name);
+    return *fakes.front();
+}
+
+}  // namespace
+
+TEST_CASE_FIXTURE(StoreTest, "hidden: a non-display view with a set is refused") {
+    DisplayChain chain(true);
+    const auto store =
+        makeStore(std::move(chain.converters), {.staging = STAGING, .device = DEVICE});
+    const OriginId origin = store->attach(makeSource()).value();
+    ViewSpec view = dvv::media::originalView(desc, HOST_PLANES, store->hostDomain());
+    view.hidden.components = {true, false, false};
+    const Result<ReadLease> read = syncWait(store->acquire({origin, 0}, view, *requester));
+    REQUIRE_FALSE(read.has_value());
+    CHECK(read.error().code == Errc::Unsupported);
+    CHECK(contains(read.error().message, "no converter path"));
+    const Result<PinLease> pinned = syncWait(store->pin({origin, 0}, view, *requester));
+    REQUIRE_FALSE(pinned.has_value());
+    CHECK(pinned.error().code == Errc::Unsupported);
+    CHECK(contains(pinned.error().message, "no converter path"));
+    requireInvariants(*store);
+}
+
+TEST_CASE_FIXTURE(StoreTest, "hidden: viewText names the set") {
+    const auto store = makeStore();
+    const OriginId origin = store->attach(makeSource()).value();
+    ViewSpec view = dvv::media::originalView(desc, HOST_PLANES, store->hostDomain());
+    view.hidden = hide(true, false, true, ChromaFill::Zero);
+    const Result<ReadLease> read = syncWait(store->acquire({origin, 0}, view, *requester));
+    REQUIRE_FALSE(read.has_value());
+    CHECK_MESSAGE(contains(read.error().message, ", hidden c0 c2, chroma zero)"),
+                  read.error().message);
+    view.hidden = hide(false, true, false);
+    const Result<ReadLease> mid = syncWait(store->acquire({origin, 0}, view, *requester));
+    REQUIRE_FALSE(mid.has_value());
+    CHECK_MESSAGE(contains(mid.error().message, ", hidden c1)"), mid.error().message);
+    requireInvariants(*store);
+}
+
+TEST_CASE_FIXTURE(StoreTest,
+                  "hidden: an existing display entry of another set is not a planning source") {
+    DisplayChain chain(true);
+    const std::vector<FakeConverter*> fakes = chain.fakes;
+    const auto store =
+        makeStore(std::move(chain.converters), {.staging = STAGING, .device = DEVICE});
+    const OriginId origin = store->attach(makeSource()).value();
+    const FrameKey key{origin, 0};
+    const Result<ReadLease> first =
+        syncWait(store->acquire(key, displayHiding(hide(true, false, false)), *requester));
+    REQUIRE_MESSAGE(first.has_value(), describe(first));
+    CHECK(first->view().hidden == hide(true, false, false));
+    const Result<ReadLease> second =
+        syncWait(store->acquire(key, dvv::media::displayView(DEVICE), *requester));
+    REQUIRE_MESSAGE(second.has_value(), describe(second));
+    CHECK(second->view().hidden == HiddenComponents{});
+    CHECK(fakeNamed(fakes, "FakeToDisplay").runs.load() == 2);
+    CHECK(fakeNamed(fakes, "GpuUnpack").runs.load() == 1);
+    requireInvariants(*store);
+}
+
+TEST_CASE_FIXTURE(StoreTest, "hidden: the store canonicalises the display want") {
+    SUBCASE("gray: hidden U and V are no set") {
+        DisplayChain chain(true);
+        const auto store =
+            makeStore(std::move(chain.converters), {.staging = STAGING, .device = DEVICE});
+        const OriginId origin = store->attach(makeSource()).value();
+        const FrameKey key{origin, 0};
+        const Result<ReadLease> plain =
+            syncWait(store->acquire(key, dvv::media::displayView(DEVICE), *requester));
+        REQUIRE_MESSAGE(plain.has_value(), describe(plain));
+        const std::uint64_t creations = store->stats().creations;
+        const std::uint64_t hits = store->stats().hits;
+        const Result<ReadLease> hidden =
+            syncWait(store->acquire(key, displayHiding(hide(false, true, true)), *requester));
+        REQUIRE_MESSAGE(hidden.has_value(), describe(hidden));
+        CHECK(hidden->view().hidden == HiddenComponents{});
+        CHECK(store->stats().creations == creations);
+        CHECK(store->stats().hits == hits + 1);
+        requireInvariants(*store);
+    }
+    SUBCASE("rgb24: the fill has no effect without chroma") {
+        const auto rgb = dvv::media::findFormat("rgb24");
+        REQUIRE(rgb.has_value());
+        desc.format = rgb.value_or(desc.format);
+        DisplayChain chain(true);
+        const std::vector<FakeConverter*> fakes = chain.fakes;
+        const auto store =
+            makeStore(std::move(chain.converters), {.staging = STAGING, .device = DEVICE});
+        const OriginId origin = store->attach(makeSource()).value();
+        const FrameKey key{origin, 0};
+        const Result<ReadLease> zero = syncWait(store->acquire(
+            key, displayHiding(hide(true, false, false, ChromaFill::Zero)), *requester));
+        REQUIRE_MESSAGE(zero.has_value(), describe(zero));
+        CHECK(zero->view().hidden.chroma == ChromaFill::Mid);
+        CHECK(zero->view().hidden == hide(true, false, false));
+        const std::uint64_t creations = store->stats().creations;
+        const Result<ReadLease> mid =
+            syncWait(store->acquire(key, displayHiding(hide(true, false, false)), *requester));
+        REQUIRE_MESSAGE(mid.has_value(), describe(mid));
+        CHECK(store->stats().creations == creations);
+        CHECK(fakeNamed(fakes, "FakeToDisplay").runs.load() == 1);
+        requireInvariants(*store);
+    }
+}
+
+TEST_CASE_FIXTURE(StoreTest, "hidden: a second set after eviction") {
+    DisplayChain chain(true);
+    const std::vector<FakeConverter*> fakes = chain.fakes;
+    const auto store =
+        makeStore(std::move(chain.converters), {.staging = STAGING, .device = DEVICE});
+    const auto source = makeSource();
+    const OriginId origin = store->attach(source).value();
+    const FrameKey key{origin, 0};
+    const Result<ReadLease> first =
+        syncWait(store->acquire(key, dvv::media::displayView(DEVICE), *requester));
+    REQUIRE_MESSAGE(first.has_value(), describe(first));
+    CHECK(source->produced.load() == 1);
+
+    // The unpacked entry and the staging copy go; the host original stays. The first lease keeps
+    // its display entry.
+    store->trim(DEVICE, 0);
+    store->trim(STAGING, 0);
+    {
+        const Result<ReadLease> second =
+            syncWait(store->acquire(key, displayHiding(hide(true, false, false)), *requester));
+        REQUIRE_MESSAGE(second.has_value(), describe(second));
+        CHECK(source->produced.load() == 1);
+        CHECK(fakeNamed(fakes, "ToStaging").runs.load() == 2);
+        CHECK(fakeNamed(fakes, "GpuUnpack").runs.load() == 2);
+        CHECK(fakeNamed(fakes, "FakeToDisplay").runs.load() == 2);
+    }
+
+    // Without an original the set plans from Produce; the leased display entry of the other set
+    // is still no source.
+    store->trim(DEVICE, 0);
+    store->trim(STAGING, 0);
+    store->trim(store->hostDomain(), 0);
+    const Result<ReadLease> third =
+        syncWait(store->acquire(key, displayHiding(hide(true, false, false)), *requester));
+    REQUIRE_MESSAGE(third.has_value(), describe(third));
+    CHECK(source->produced.load() == 2);
+    CHECK(fakeNamed(fakes, "FakeToDisplay").runs.load() == 3);
+    CHECK(first->view().hidden == HiddenComponents{});
+    requireInvariants(*store);
 }

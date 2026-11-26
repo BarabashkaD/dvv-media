@@ -207,7 +207,7 @@ private:
     [[nodiscard]] Task<Result<detail::LeaseCore>> acquireCore(FrameKey key, ViewSpec want,
                                                               LeaseKind kind, IExecutor& resume_on,
                                                               std::source_location where);
-    [[nodiscard]] Result<detail::Prepared> prepareLocked(const FrameKey& key, const ViewSpec& want,
+    [[nodiscard]] Result<detail::Prepared> prepareLocked(const FrameKey& key, ViewSpec want,
                                                          LeaseKind kind);
     [[nodiscard]] Result<detail::Plan> planLocked(const FrameKey& key, detail::Record& record,
                                                   const ViewSpec& want);

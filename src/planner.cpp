@@ -173,7 +173,7 @@ struct Ending {
 bool satisfies(const ViewSpec& view, const ViewSpec& want) noexcept {
     return view.format == want.format && view.colour == want.colour &&
            view.binding == want.binding && view.domain == want.domain &&
-           view.downscaleLog2 == want.downscaleLog2 &&
+           view.downscaleLog2 == want.downscaleLog2 && view.hidden == want.hidden &&
            (want.layout == LayoutPolicy::Any || view.layout == want.layout);
 }
 

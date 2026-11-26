@@ -159,7 +159,11 @@ StoreTest::StoreTest() {
     const auto gray = findFormat("gray");
     REQUIRE(gray.has_value());
     desc = FrameDesc{gray.value_or(FormatId{0}), 0, 16, 8};
-    hostView = ViewSpec{desc.format, 0, LayoutPolicy::Any, HOST_PLANES, Domain{}, 0};
+    hostView = ViewSpec{.format = desc.format,
+                        .colour = 0,
+                        .layout = LayoutPolicy::Any,
+                        .binding = HOST_PLANES,
+                        .domain = Domain{}};
     planesView = hostView;
     planesView.format = unpackedFormat(desc.format);
 }

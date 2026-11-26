@@ -172,6 +172,10 @@ bool isDisplay(FormatId format) noexcept {
     return formatDesc(format).name == DISPLAY_NAME;
 }
 
+bool hasChroma(FormatId format, const ColourParams& resolved) noexcept {
+    return formatDesc(format).model == ColourModel::Yuv && resolved.matrix != ColourMatrix::Rgb;
+}
+
 ColourId displayColour() {
     static const ColourId ID = internColour({.matrix = ColourMatrix::Rgb,
                                              .range = ColourRange::Full,
@@ -280,15 +284,25 @@ DisplayAffine displayAffine(FormatId format, const ColourParams& resolved) {
 }
 
 std::array<float, 4> toDisplayReference(FormatId format, const ColourParams& resolved,
-                                        std::span<const std::uint16_t> code_values) noexcept {
+                                        std::span<const std::uint16_t> code_values,
+                                        HiddenComponents hidden) noexcept {
     const DisplayAffine affine = displayAffine(format, resolved);
-    const std::size_t component_count = formatDesc(format).componentCount;
+    const PixelFormatDesc& desc = formatDesc(format);
+    const std::size_t component_count = desc.componentCount;
     // Colour: Y, or Y U V / R G B (the shader's rule); a missing entry counts as 0.
     const std::size_t colour_count = component_count >= 3 ? 3 : 1;
     const std::size_t count = std::min(colour_count, code_values.size());
     std::array<float, 3> c{};
     for (std::size_t k = 0; k < count; ++k) {
         c[k] = static_cast<float>(code_values[k]);
+    }
+    // Hidden colour components: 0, or the mid code for hidden chroma under ChromaFill::Mid.
+    const bool mid_chroma = hidden.chroma == ChromaFill::Mid && hasChroma(format, resolved);
+    for (std::size_t k = 0; k < colour_count; ++k) {
+        if (hidden.components[k]) {
+            c[k] = k >= 1 && mid_chroma ? static_cast<float>(1U << (desc.components[k].bits - 1U))
+                                        : 0.0F;
+        }
     }
     // Alpha: the last component when the format has A; a missing entry counts as 1.
     const float alpha_scale = detail::alphaScaleOf(format);

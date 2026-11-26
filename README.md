@@ -32,7 +32,7 @@ Applications use dvv-media as a git submodule in their `libs/` folder, next to d
 providers are in the component library `dvv::media_sources`:
 
 ```cmake
-find_package(dvv_media 0.6 REQUIRED)   # or dvv_media in-tree
+find_package(dvv_media 0.7 REQUIRED)   # or dvv_media in-tree
 target_link_libraries(my_app PRIVATE dvv::media)
 dvv_link_components(my_app dvv::media_sources)
 ```
@@ -149,6 +149,7 @@ It offers views, described by a `ViewSpec`:
 | `binding` | a `BindingKind`: `HOST_PLANES`, `vulkan::BUFFER` or `vulkan::IMAGE` |
 | `domain` | a `Domain`: `MemKind` (`Host`, `HostVisible`, `DeviceLocal`), device and generation |
 | `downscaleLog2` | must be 0 |
+| `hidden` | a `HiddenComponents`: the colour components the display replaces; must be the default (nothing hidden) in any other view |
 
 A view's binding is a `Binding`. `planes()` gives the host planes (`HostPlanesB`: read-only
 spans and strides per plane), or null for a GPU binding. `kind()` gives its `BindingKind`.
@@ -173,7 +174,9 @@ gives its name for messages. The store's domains are `hostDomain()`, and with a 
 | display | `vulkan::IMAGE` | `DeviceLocal` | `ToDisplay` | Derived |
 
 A host-only store (no GPU context) has only the first two rows. The store takes the cheapest path
-with at most `maxPlanDepth` converters; any other view is `Errc::Unsupported`.
+with at most `maxPlanDepth` converters; any other view is `Errc::Unsupported`. A view other than the
+display view with a non-default `hidden` is `Errc::Unsupported` ("no converter path ... to
+<view>").
 
 ```cpp
 auto store = FrameStore::create({.cpu = pool, .io = pool, .gpu = context}).value();
@@ -386,6 +389,24 @@ and clamps again. Chroma is taken from the nearest sample. Alpha is the frame's 
 (not premultiplied) and full range (also in a limited-range YUV format), in [0, 1]; 1 for a
 format without an A component. The primaries are information only: they are not converted, so
 BT.2020 shows like BT.709 (as on a monitor that ignores them).
+
+The display view can hide colour components: `ViewSpec::hidden` is a `HiddenComponents`
+(`dvv/media/types.h`), `components[k]` for component k in canonical order (Y U V, R G B; gray has
+only Y) and `chroma`, a `ChromaFill`. ToDisplay replaces the code values of the hidden components
+before the affine map, so the colour matrix sees the replacements. A hidden Y, R, G or B becomes
+code 0. A hidden U or V becomes the mid code 2^(bits - 1) (`ChromaFill::Mid`, the default: 128 at
+8 bits, 512 for a 10-bit format, also for an MSB-aligned one such as `p010le`) or 0
+(`ChromaFill::Zero`). `hasChroma(format, resolved)` tells whether c1 and c2 are colour-difference
+components: a YUV format whose resolved matrix is not `rgb`. Without chroma every hidden component
+becomes 0. Alpha is never hidden. With nothing hidden (the default), `hidden` has no effect on the
+pixels.
+
+Only the display view may hide (see the view table). The store keeps one display frame per hidden
+set, in a canonical form per frame: components the format lacks are cleared (a format with fewer
+than three colour components keeps only `components[0]`), and `chroma` is `Mid` unless the format
+has chroma and c1 or c2 is hidden. Sets that give the same picture share one frame, and the lease
+reports the canonical set in `view().hidden`. A new set runs only ToDisplay again, from the cached
+planes. `toDisplayReference()` takes the set as its last parameter (default: nothing hidden).
 
 The CPU side of the display transform is public: `toDisplayReference()` for one pixel,
 `srgbEncode()` and `srgbDecode()`, `encodeSrgb8()`, and `floatToHalf()` and `halfToFloat()` for

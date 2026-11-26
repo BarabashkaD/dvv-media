@@ -108,7 +108,11 @@ StagingFrame::StagingFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId
       buffer_binding_(vulkan::bufferBinding(buffer_)),
       geometry_(geometry),
       host_read_(std::move(host_read)) {
-    const ViewSpec buffer_view{format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0};
+    const ViewSpec buffer_view{.format = format,
+                               .colour = desc.colour,
+                               .layout = LayoutPolicy::Tight,
+                               .binding = vulkan::BUFFER,
+                               .domain = domain};
     if (buffer_ && host_read_ && buffer_->desc().memory == gpu::MemoryUsage::HostReadback) {
         ViewSpec host_view = buffer_view;
         host_view.binding = HOST_PLANES;
@@ -155,7 +159,11 @@ VkBufferFrame::VkBufferFrame(CreationKey<FrameStore> key, FrameDesc desc, Domain
                              std::shared_ptr<gpu::GpuBuffer> buffer) noexcept
     : Managed<VkBufferFrame>(std::move(key)),
       desc_(desc),
-      view_{desc.format, desc.colour, LayoutPolicy::Tight, vulkan::BUFFER, domain, 0},
+      view_{.format = desc.format,
+            .colour = desc.colour,
+            .layout = LayoutPolicy::Tight,
+            .binding = vulkan::BUFFER,
+            .domain = domain},
       buffer_(std::move(buffer)),
       buffer_binding_(vulkan::bufferBinding(buffer_)) {}
 
@@ -176,19 +184,23 @@ std::size_t VkBufferFrame::bytes() const noexcept {
 
 // ---- VkPlanesFrame ----
 
-VkPlanesFrame::VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format,
-                             ColourId colour, Domain domain,
+VkPlanesFrame::VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, const ViewSpec& view,
                              std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes,
                              std::uint8_t plane_count) noexcept
     : Managed<VkPlanesFrame>(std::move(key)),
       desc_(desc),
-      view_{format, colour, LayoutPolicy::Opaque, vulkan::IMAGE, domain, 0},
+      view_{.format = view.format,
+            .colour = view.colour,
+            .layout = LayoutPolicy::Opaque,
+            .binding = vulkan::IMAGE,
+            .domain = view.domain,
+            .hidden = view.hidden},
       binding_(vulkan::imageBinding(
           plane_count <= planes.size()
               ? std::span<const std::shared_ptr<gpu::GpuImage>>(planes).first(plane_count)
               : std::span<const std::shared_ptr<gpu::GpuImage>>{})) {
     try {
-        if (const Result<FrameGeometry> layout = geometry(format, desc.width, desc.height)) {
+        if (const Result<FrameGeometry> layout = geometry(view.format, desc.width, desc.height)) {
             bytes_ = static_cast<std::size_t>(layout->bytes);
         }
     } catch (...) {  // the error message could not be allocated: bytes stay 0

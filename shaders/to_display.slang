@@ -15,9 +15,9 @@ struct ToDisplayPush
     uint componentCount;  // 1..4 (alpha last, when 2 or 4)
     uint transfer;        // 0 sRGB/unspecified, 1 BT.1886, 2 linear, 3 PQ, 4 HLG
     float alphaScale;     // 1 / (2^bits - 1) of A; 0 without A
-    uint pad1;
-    uint pad2;
-    uint pad3;
+    uint hiddenMask;      // bit k: colour component k is hidden
+    uint chromaFill;      // hidden c1 code in bits 0..15, hidden c2 code in 16..31 (0: code 0)
+    uint pad;
 };
 
 [[vk::push_constant]] ConstantBuffer<ToDisplayPush> pc;
@@ -131,11 +131,11 @@ void main(uint3 id: SV_DispatchThreadID)
         return;
     }
     float3 c = float3(0.0, 0.0, 0.0);
-    c.x = codeValue(0u, id.xy);
+    c.x = (pc.hiddenMask & 1u) != 0u ? 0.0 : codeValue(0u, id.xy);
     if (pc.componentCount >= 3u)
     {
-        c.y = codeValue(1u, id.xy);
-        c.z = codeValue(2u, id.xy);
+        c.y = (pc.hiddenMask & 2u) != 0u ? float(pc.chromaFill & 0xFFFFu) : codeValue(1u, id.xy);
+        c.z = (pc.hiddenMask & 4u) != 0u ? float(pc.chromaFill >> 16u) : codeValue(2u, id.xy);
     }
     float3 v = float3(pc.row0.x * c.x + pc.row0.y * c.y + pc.row0.z * c.z + pc.row0.w,
                       pc.row1.x * c.x + pc.row1.y * c.y + pc.row1.z * c.z + pc.row1.w,

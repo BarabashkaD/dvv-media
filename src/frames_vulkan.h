@@ -74,12 +74,14 @@ private:
 
 // Device images, layout GENERAL: the unpacked planes (D5, one R8_UINT/R16_UINT image per
 // component, colour desc.colour) or the display image (M3 D3, one RGBA16F image, format
-// displayFormat(), colour displayColour()). One native view: (format, colour, Opaque,
-// vulkan::IMAGE, domain DeviceLocal).
+// displayFormat(), colour displayColour()). One native view: format, colour, domain and hidden
+// set from the view its maker planned (ConvertContext::output; the set is the one the display
+// image was made with), layout Opaque and binding vulkan::IMAGE always. The frame states its own
+// layout and binding, so the store's publish check still refuses a plan that wanted others.
 class VkPlanesFrame final : public IFrame, public Managed<VkPlanesFrame> {
 public:
-    VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, FormatId format, ColourId colour,
-                  Domain domain, std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes,
+    VkPlanesFrame(CreationKey<FrameStore> key, FrameDesc desc, const ViewSpec& view,
+                  std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes,
                   std::uint8_t plane_count) noexcept;
     [[nodiscard]] const FrameDesc& desc() const noexcept override { return desc_; }
     [[nodiscard]] std::span<const ViewSpec> nativeViews() const noexcept override;

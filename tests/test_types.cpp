@@ -295,3 +295,9 @@ TEST_CASE("URI path text round-trips through dvv-base") {
 #endif
     CHECK(round_trip("").empty());
 }
+
+TEST_CASE("hidden: the set is part of the view's equality") {
+    CHECK(media::ViewSpec{.hidden = {.components = {true, false, false}}} != media::ViewSpec{});
+    CHECK(media::HiddenComponents{.chroma = media::ChromaFill::Zero} != media::HiddenComponents{});
+    CHECK(media::ViewSpec{}.hidden == media::HiddenComponents{});
+}

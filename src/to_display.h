@@ -34,23 +34,32 @@ struct ToDisplayPush {
     std::array<std::uint32_t, 4> planeLayout{};
     std::uint32_t width = 0;  // output = frame size
     std::uint32_t height = 0;
-    std::uint32_t componentCount = 0;    // 1..4 (alpha last, when 2 or 4)
-    std::uint32_t transfer = 0;          // 0 sRGB/unspecified, 1 BT.1886, 2 linear, 3 PQ, 4 HLG
-    float alphaScale = 0.0F;             // 1 / (2^bits - 1) of A; 0 without A
-    std::array<std::uint32_t, 3> pad{};  // explicit, to 96 bytes
+    std::uint32_t componentCount = 0;  // 1..4 (alpha last, when 2 or 4)
+    std::uint32_t transfer = 0;        // 0 sRGB/unspecified, 1 BT.1886, 2 linear, 3 PQ, 4 HLG
+    float alphaScale = 0.0F;           // 1 / (2^bits - 1) of A; 0 without A
+    std::uint32_t hiddenMask = 0;      // bit k: colour component k is hidden
+    std::uint32_t chromaFill = 0;      // hidden c1 code in bits 0..15, hidden c2 code in 16..31
+    std::uint32_t pad = 0;             // explicit, to 96 bytes
 };
 static_assert(sizeof(ToDisplayPush) == 96);
 static_assert(offsetof(ToDisplayPush, planeLayout) == 48 && offsetof(ToDisplayPush, width) == 64 &&
               offsetof(ToDisplayPush, componentCount) == 72 &&
-              offsetof(ToDisplayPush, alphaScale) == 80 && offsetof(ToDisplayPush, pad) == 84);
+              offsetof(ToDisplayPush, alphaScale) == 80 &&
+              offsetof(ToDisplayPush, hiddenMask) == 84 &&
+              offsetof(ToDisplayPush, chromaFill) == 88 && offsetof(ToDisplayPush, pad) == 92);
 
 inline constexpr std::uint32_t TO_DISPLAY_GROUP = 8;     // [numthreads(8, 8, 1)]
 inline constexpr std::uint32_t TO_DISPLAY_BINDINGS = 5;  // planes 0..3, output 4
 
-// For a frame of `format` (original or unpacked: the components are the same) and a resolved
-// colour. Errc::Internal for an unknown format or an empty frame.
+// For a frame of `format` (original or unpacked: the components are the same), a resolved colour
+// and a hidden set. hiddenMask has bit k for each hidden colour component k (k < 3, or k < 1 for
+// a format with fewer than three colour components). chromaFill holds the mid code
+// 2^(bits - 1) of each hidden c1 and c2 when hasChroma(format, resolved) holds and the fill is
+// ChromaFill::Mid, otherwise 0 (a hidden component reads 0). Errc::Internal for an unknown format
+// or an empty frame.
 [[nodiscard]] Result<ToDisplayPush> toDisplayPush(FormatId format, const ColourParams& resolved,
-                                                  std::uint32_t width, std::uint32_t height);
+                                                  std::uint32_t width, std::uint32_t height,
+                                                  HiddenComponents hidden);
 
 // The ToDisplay pipeline (5 storage images, 96 bytes of push constants). Errc::Unsupported when
 // R8_UINT or R16_UINT lacks STORAGE_IMAGE or STORAGE_READ_WITHOUT_FORMAT, or R16G16B16A16_SFLOAT
