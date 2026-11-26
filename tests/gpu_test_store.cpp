@@ -212,12 +212,11 @@ ViewSpec viewMadeBy(const media::detail::Converter& converter, const FrameDesc& 
     if (to.display) {
         return media::displayView(domain.value_or(Domain{}));
     }
-    return ViewSpec{to.unpacked ? media::unpackedFormat(desc.format) : desc.format,
-                    desc.colour,
-                    LayoutPolicy::Any,
-                    to.binding,
-                    domain.value_or(Domain{}),
-                    0};
+    return ViewSpec{.format = to.unpacked ? media::unpackedFormat(desc.format) : desc.format,
+                    .colour = desc.colour,
+                    .layout = LayoutPolicy::Any,
+                    .binding = to.binding,
+                    .domain = domain.value_or(Domain{})};
 }
 
 }  // namespace
@@ -308,8 +307,11 @@ TEST_CASE_FIXTURE(GpuTest,
         const auto after = store.stats();
         CHECK(runsOf(after, "HostToStaging") == runsOf(staged, "HostToStaging") + 1);
         const auto views = media::detail::StoreAccess::views(store, {test.origin, 1});
-        const ViewSpec upload{desc.format,           desc.colour,  LayoutPolicy::Tight,
-                              media::vulkan::BUFFER, test.staging, 0};
+        const ViewSpec upload{.format = desc.format,
+                              .colour = desc.colour,
+                              .layout = LayoutPolicy::Tight,
+                              .binding = media::vulkan::BUFFER,
+                              .domain = test.staging};
         CHECK(std::ranges::any_of(views, [&](const auto& view) { return view.first == upload; }));
     }
 
@@ -579,8 +581,11 @@ TEST_CASE_FIXTURE(GpuTest, "store gpu: an adopted unpadded buffer fails the unpa
                                                 .name = "unpadded"});
     REQUIRE_MESSAGE(buffer.has_value(),
                     (buffer.has_value() ? std::string{} : buffer.error().describe()));
-    const ViewSpec view{desc.format,           desc.colour, LayoutPolicy::Tight,
-                        media::vulkan::BUFFER, test.device, 0};
+    const ViewSpec view{.format = desc.format,
+                        .colour = desc.colour,
+                        .layout = LayoutPolicy::Tight,
+                        .binding = media::vulkan::BUFFER,
+                        .domain = test.device};
     auto frame = std::make_shared<UnpaddedBufferFrame>(desc, view, std::move(*buffer));
     const auto adopted = test.store->adopt({test.origin, 0}, std::move(frame));
     REQUIRE_MESSAGE(adopted.has_value(),

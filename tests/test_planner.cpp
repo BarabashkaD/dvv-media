@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "converters.h"
+#include "dvv/media/display.h"
 #include "dvv/media/frame_vulkan.h"
 #include "dvv/media/pixel_format.h"
 #include "dvv/media/types.h"
@@ -167,7 +168,11 @@ TEST_SUITE("planner") {
 
     TEST_CASE("selectEntry ranks fidelity, then published over pending") {
         const FrameDesc desc = grayDesc();
-        const ViewSpec host_view{desc.format, 0, LayoutPolicy::Any, HOST_PLANES, Domain{}, 0};
+        const ViewSpec host_view{.format = desc.format,
+                                 .colour = 0,
+                                 .layout = LayoutPolicy::Any,
+                                 .binding = HOST_PLANES,
+                                 .domain = Domain{}};
         ViewSpec planes_view = host_view;
         planes_view.format = dvv::media::unpackedFormat(desc.format);
 
@@ -197,4 +202,31 @@ TEST_SUITE("planner") {
         chosen = dvv::media::detail::selectEntry(only_failed, planes_view, desc.format);
         CHECK(chosen.first == nullptr);
     }
+}
+
+TEST_CASE("hidden: satisfies and selectEntry") {
+    using dvv::media::ChromaFill;
+    using dvv::media::HiddenComponents;
+    const FrameDesc desc = grayDesc();
+    const ViewSpec display{.format = dvv::media::displayFormat(),
+                           .colour = dvv::media::displayColour(),
+                           .layout = LayoutPolicy::Opaque,
+                           .binding = vulkan::IMAGE,
+                           .domain = Domain{.kind = MemKind::DeviceLocal}};
+    ViewSpec set_a = display;
+    set_a.hidden = HiddenComponents{.components = {true, false, false}};
+    ViewSpec set_b = display;
+    set_b.hidden = HiddenComponents{.components = {true, false, false}, .chroma = ChromaFill::Zero};
+
+    CHECK(dvv::media::detail::satisfies(set_a, set_a));
+    CHECK(dvv::media::detail::satisfies(display, display));
+    CHECK_FALSE(dvv::media::detail::satisfies(set_a, set_b));
+    CHECK_FALSE(dvv::media::detail::satisfies(set_a, display));
+    CHECK_FALSE(dvv::media::detail::satisfies(display, set_a));
+
+    const std::vector<std::shared_ptr<Entry>> entries{
+        entry(Fidelity::Derived, EntryState::Published, set_a)};
+    CHECK(dvv::media::detail::selectEntry(entries, set_a, desc.format).first == entries[0]);
+    CHECK(dvv::media::detail::selectEntry(entries, set_b, desc.format).first == nullptr);
+    CHECK(dvv::media::detail::selectEntry(entries, display, desc.format).first == nullptr);
 }

@@ -304,7 +304,6 @@ public:
     [[nodiscard]] Task<Result<std::shared_ptr<IFrame>>> run(ConvertInput given,
                                                             ConvertContext context) const override {
         const FrameDesc desc = given.desc;
-        const FormatId unpacked = unpackedFormat(desc.format);
         co_try(bufferOf(given, name()));
         const PixelFormatDesc& d = formatDesc(desc.format);
         std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> planes{};
@@ -337,7 +336,7 @@ public:
                                     }));
         co_try(std::move(*checked));
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<VkPlanesFrame>(
-            context.store, desc, unpacked, desc.colour, context.output.domain, planes, count));
+            context.store, desc, context.output, planes, count));
     }
 
 private:
@@ -501,8 +500,8 @@ public:
                                             given.key.index, given.key.origin));
         }
         const ColourParams resolved = resolveColour(desc).params;
-        const ToDisplayPush push =
-            co_try(toDisplayPush(desc.format, resolved, desc.width, desc.height));
+        const ToDisplayPush push = co_try(
+            toDisplayPush(desc.format, resolved, desc.width, desc.height, context.output.hidden));
         std::shared_ptr<gpu::GpuImage> output = co_try(gpu::createImage(
             *context_, {.width = desc.width,
                         .height = desc.height,
@@ -530,8 +529,7 @@ public:
         std::array<std::shared_ptr<gpu::GpuImage>, MAX_COMPONENTS> display{};
         display[0] = std::move(output);
         co_return std::shared_ptr<IFrame>(StoreAccess::makeFrame<VkPlanesFrame>(
-            context.store, desc, displayFormat(), displayColour(), context.output.domain,
-            std::move(display), std::uint8_t{1}));
+            context.store, desc, context.output, std::move(display), std::uint8_t{1}));
     }
 
 private:

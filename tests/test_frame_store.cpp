@@ -182,7 +182,11 @@ std::optional<std::uint32_t> rootReaders(FrameStore& store, const FrameKey& key)
 
 // A view of the frame's own format and colour.
 ViewSpec viewOf(FormatId format, BindingKind binding, Domain domain) {
-    return ViewSpec{format, 0, LayoutPolicy::Any, binding, domain, 0};
+    return ViewSpec{.format = format,
+                    .colour = 0,
+                    .layout = LayoutPolicy::Any,
+                    .binding = binding,
+                    .domain = domain};
 }
 
 // The bytes the fake source allocates for one frame (gray 16x8).
@@ -481,7 +485,11 @@ TEST_SUITE("store") {
 
     TEST_CASE_FIXTURE(StoreTest, "adopt inserts an original; a second adopt is Internal") {
         const auto store = makeStore();
-        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, HOST_PLANES, {}, 0};
+        const ViewSpec tight{.format = desc.format,
+                             .colour = 0,
+                             .layout = LayoutPolicy::Tight,
+                             .binding = HOST_PLANES,
+                             .domain = {}};
         const std::vector<std::byte> payload(128, std::byte{7});
         const FrameKey adopted_key{77, 0};
         const Result<ReadLease> adopted = store->adopt(
@@ -509,6 +517,15 @@ TEST_SUITE("store") {
             TestAuthority::makeShared<FakeFrame>(desc, std::vector<ViewSpec>{other}, payload));
         REQUIRE_FALSE(wrong.has_value());
         CHECK(wrong.error().code == Errc::Internal);
+
+        ViewSpec hidden = tight;
+        hidden.hidden.components = {true, false, false};
+        const Result<ReadLease> with_hidden = store->adopt(
+            {79, 0},
+            TestAuthority::makeShared<FakeFrame>(desc, std::vector<ViewSpec>{hidden}, payload));
+        REQUIRE_FALSE(with_hidden.has_value());
+        CHECK(with_hidden.error().code == Errc::Internal);
+        CHECK(contains(with_hidden.error().message, "nothing hidden"));
 
         const auto source = makeSource();
         Gate gate;
@@ -1334,7 +1351,11 @@ TEST_SUITE("store") {
         static_cast<void>(take(*store, {origin, 0}, hostView, *requester));
         static_cast<void>(take(*store, {origin, 1}, hostView, *requester));
         CHECK(store->stats().tiers[0].bytes == 256);
-        const ViewSpec tight{desc.format, 0, LayoutPolicy::Tight, HOST_PLANES, {}, 0};
+        const ViewSpec tight{.format = desc.format,
+                             .colour = 0,
+                             .layout = LayoutPolicy::Tight,
+                             .binding = HOST_PLANES,
+                             .domain = {}};
         auto frame = TestAuthority::makeShared<FakeFrame>(
             desc, std::vector<ViewSpec>{tight}, std::vector<std::byte>(128, std::byte{7}));
         const Result<ReadLease> adopted = store->adopt({77, 0}, std::move(frame));

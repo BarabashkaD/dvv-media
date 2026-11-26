@@ -2,6 +2,7 @@
 
 // Frame value types of the media layer.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -66,6 +67,18 @@ enum class LayoutPolicy : std::uint8_t {
     Tight,
     Opaque,  // a backend-defined layout the host does not address
 };
+// The value a hidden colour-difference component (c1, c2 when hasChroma()) takes: the mid code
+// 2^(bits-1), or 0.
+enum class ChromaFill : std::uint8_t { Mid, Zero };
+// Colour components replaced before the display's colour matrix (ToDisplay only).
+// components[k] is component k in canonical order (Y U V or R G B; gray has only Y, k = 0).
+// A hidden component becomes code 0, except a hidden colour-difference component (hasChroma()),
+// which becomes `chroma`'s value. Alpha is never hidden.
+struct HiddenComponents {
+    std::array<bool, 3> components{};     // true: hidden
+    ChromaFill chroma = ChromaFill::Mid;  // counts only for a hidden colour-difference component
+    bool operator==(const HiddenComponents&) const = default;
+};
 struct ViewSpec {
     FormatId format = 0;
     ColourId colour = 0;
@@ -73,6 +86,7 @@ struct ViewSpec {
     BindingKind binding = HOST_PLANES;
     Domain domain{};
     std::uint8_t downscaleLog2 = 0;
+    HiddenComponents hidden{};  // only the display view may hide; the default hides nothing
     bool operator==(const ViewSpec&) const = default;
 };
 enum class Fidelity : std::uint8_t { Exact, Lossless, Derived };
