@@ -510,6 +510,24 @@ import dvv_media.view_lines;
 using namespace dvv::media;  // or dvv::media::lineAt(...)
 ```
 
+## Sample grid and stored words
+
+`dvv/media/sample_grid.h` holds the one rule for the samples of a component, and
+`shaders/sample_grid.slang` is the same for shaders (the same names in the same namespace, the same
+statements). `sampleOf(component, pixel)` gives the sample of a subsampled component that an image
+pixel belongs to (nearest: the pixel shifted right by `log2SubX` and `log2SubY`), and
+`blockOf(component, sample, image)` the image pixels a sample covers (empty outside the
+component's grid). ToDisplay reads its planes with them.
+
+`storedWord(format, width, height, component, sample)` says where a sample lies in the original
+bytes of a frame (the tight `geometry()` layout): its plane, the word's byte offset, size and byte
+order, the sample's `shift` and `bits`, the word's `paddingMask` (the bits no sample of the group
+covers) and the shifts of every sample in the word. `readStoredWord` reads the word from a span of
+the frame's bytes and `codeOf(word, shift, bits)` takes the code out. `StoredWordLayout` and
+`storedWordLayout()` carry the same rule of one component as shader data (72 bytes; the same layout
+as `StoredWordLayout` in sample_grid.slang); the GPU unpack reads the stored words through it. The
+module is exported like `view_lines`: `import dvv_media.sample_grid;`.
+
 ## Adding a built-in format
 
 1. Append one line to `makeBuiltInFormats()` in `src/catalogue.cpp` (appending keeps the ids) and

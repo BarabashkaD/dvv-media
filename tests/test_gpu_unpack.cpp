@@ -40,80 +40,80 @@ TEST_SUITE("gpu_unpack") {
     TEST_CASE("unpack push constants of yuv420p10le at 33x17") {
         const detail::UnpackPush y = pushOf("yuv420p10le", 33, 17, 0, 4096);
         CHECK(y.base == 4096);
-        CHECK(y.planeOffset == 0);
-        CHECK(y.stride == 66);
-        CHECK(y.groupBytes == 2);
-        CHECK(y.wordBytes == 2);
-        CHECK(y.bigEndian == 0);
-        CHECK(y.bits == 10);
+        CHECK(y.layout.planeOffset == 0);
+        CHECK(y.layout.stride == 66);
+        CHECK(y.layout.groupBytes == 2);
+        CHECK(y.layout.wordBytes == 2);
+        CHECK(y.layout.bigEndian == 0);
+        CHECK(y.layout.bits == 10);
         CHECK(y.width == 33);
         CHECK(y.height == 17);
-        CHECK(y.samplesPerGroup == 1);
-        CHECK(y.slots == Slots{0, 0, 0});
-        CHECK(y.pad == 0);
+        CHECK(y.layout.samplesPerGroup == 1);
+        CHECK(y.layout.slots == Slots{0, 0, 0});
+        CHECK(y.layout.pad == 0);
 
         const detail::UnpackPush u = pushOf("yuv420p10le", 33, 17, 1, 4096);
         CHECK(u.base == 4096);
-        CHECK(u.planeOffset == 1122);
-        CHECK(u.stride == 34);
+        CHECK(u.layout.planeOffset == 1122);
+        CHECK(u.layout.stride == 34);
         CHECK(u.width == 17);
         CHECK(u.height == 9);
-        CHECK(u.bits == 10);
-        CHECK(u.samplesPerGroup == 1);
+        CHECK(u.layout.bits == 10);
+        CHECK(u.layout.samplesPerGroup == 1);
 
         const detail::UnpackPush v = pushOf("yuv420p10le", 33, 17, 2, 4096);
-        CHECK(v.planeOffset == 1428);
-        CHECK(v.stride == 34);
+        CHECK(v.layout.planeOffset == 1428);
+        CHECK(v.layout.stride == 34);
         CHECK(v.width == 17);
         CHECK(v.height == 9);
     }
 
     TEST_CASE("unpack push constants of v210 at 12x1") {
         const detail::UnpackPush y = pushOf("v210", 12, 1, 0);
-        CHECK(y.stride == 128);
-        CHECK(y.groupBytes == 16);
-        CHECK(y.wordBytes == 4);
-        CHECK(y.bigEndian == 0);
-        CHECK(y.bits == 10);
+        CHECK(y.layout.stride == 128);
+        CHECK(y.layout.groupBytes == 16);
+        CHECK(y.layout.wordBytes == 4);
+        CHECK(y.layout.bigEndian == 0);
+        CHECK(y.layout.bits == 10);
         CHECK(y.width == 12);
         CHECK(y.height == 1);
-        CHECK(y.samplesPerGroup == 6);
-        CHECK(y.slots == Slots{0x0100000A, 0x020A0114, 0x03140300});
+        CHECK(y.layout.samplesPerGroup == 6);
+        CHECK(y.layout.slots == Slots{0x0100000A, 0x020A0114, 0x03140300});
 
         const detail::UnpackPush u = pushOf("v210", 12, 1, 1);
         CHECK(u.width == 6);
-        CHECK(u.samplesPerGroup == 3);
-        CHECK(u.slots == Slots{0x010A0000, 0x00000214, 0});
+        CHECK(u.layout.samplesPerGroup == 3);
+        CHECK(u.layout.slots == Slots{0x010A0000, 0x00000214, 0});
 
         const detail::UnpackPush v = pushOf("v210", 12, 1, 2);
         CHECK(v.width == 6);
-        CHECK(v.samplesPerGroup == 3);
-        CHECK(v.slots == Slots{0x02000014, 0x0000030A, 0});
+        CHECK(v.layout.samplesPerGroup == 3);
+        CHECK(v.layout.slots == Slots{0x02000014, 0x0000030A, 0});
     }
 
     TEST_CASE("unpack push constants of p010le and rgb48be") {
         for (std::size_t c = 1; c <= 2; ++c) {
             CAPTURE(c);
             const detail::UnpackPush chroma = pushOf("p010le", 4, 2, c);
-            CHECK(chroma.slots[0] == (c == 1 ? 0x0006U : 0x0106U));
-            CHECK(chroma.bits == 10);
-            CHECK(chroma.wordBytes == 2);
-            CHECK(chroma.groupBytes == 4);
-            CHECK(chroma.samplesPerGroup == 1);
+            CHECK(chroma.layout.slots[0] == (c == 1 ? 0x0006U : 0x0106U));
+            CHECK(chroma.layout.bits == 10);
+            CHECK(chroma.layout.wordBytes == 2);
+            CHECK(chroma.layout.groupBytes == 4);
+            CHECK(chroma.layout.samplesPerGroup == 1);
             CHECK(chroma.width == 2);
             CHECK(chroma.height == 1);
-            CHECK(chroma.planeOffset == 16);
-            CHECK(chroma.stride == 8);
+            CHECK(chroma.layout.planeOffset == 16);
+            CHECK(chroma.layout.stride == 8);
         }
         for (std::size_t c = 0; c < 3; ++c) {
             CAPTURE(c);
             const detail::UnpackPush rgb = pushOf("rgb48be", 3, 1, c);
-            CHECK(rgb.slots[0] == c * 0x0100U);
-            CHECK(rgb.bigEndian == 1);
-            CHECK(rgb.bits == 16);
-            CHECK(rgb.groupBytes == 6);
-            CHECK(rgb.wordBytes == 2);
-            CHECK(rgb.stride == 18);
+            CHECK(rgb.layout.slots[0] == c * 0x0100U);
+            CHECK(rgb.layout.bigEndian == 1);
+            CHECK(rgb.layout.bits == 16);
+            CHECK(rgb.layout.groupBytes == 6);
+            CHECK(rgb.layout.wordBytes == 2);
+            CHECK(rgb.layout.stride == 18);
         }
     }
 
@@ -131,15 +131,35 @@ TEST_SUITE("gpu_unpack") {
         const auto& type = block->at("type");
         CHECK(dvv::json::get<std::uint32_t>(type.at("elementVarLayout").at("binding"), "size") ==
               sizeof(detail::UnpackPush));
+        // Offsets from the block start; the layout's fields as "layout.<name>".
         std::map<std::string, std::uint32_t> offsets;
         for (const auto& field : type.at("elementType").at("fields")) {
-            offsets[dvv::json::get<std::string>(field, "name").value_or("?")] =
+            const std::string name = dvv::json::get<std::string>(field, "name").value_or("?");
+            const std::uint32_t offset =
                 dvv::json::get<std::uint32_t>(field.at("binding"), "offset").value_or(~0U);
+            offsets[name] = offset;
+            if (name == "layout") {
+                for (const auto& member : field.at("type").at("fields")) {
+                    offsets["layout." + dvv::json::get<std::string>(member, "name").value_or("?")] =
+                        offset +
+                        dvv::json::get<std::uint32_t>(member.at("binding"), "offset").value_or(~0U);
+                }
+            }
         }
-        const std::map<std::string, std::uint32_t> expected{
-            {"base", 0},       {"planeOffset", 8},      {"stride", 16}, {"groupBytes", 20},
-            {"wordBytes", 24}, {"bigEndian", 28},       {"bits", 32},   {"width", 36},
-            {"height", 40},    {"samplesPerGroup", 44}, {"slots", 48},  {"pad", 60}};
+        const std::map<std::string, std::uint32_t> expected{{"base", 0},
+                                                            {"layout", 8},
+                                                            {"layout.planeOffset", 8},
+                                                            {"layout.stride", 16},
+                                                            {"layout.groupBytes", 20},
+                                                            {"layout.wordBytes", 24},
+                                                            {"layout.bigEndian", 28},
+                                                            {"layout.bits", 32},
+                                                            {"layout.samplesPerGroup", 36},
+                                                            {"layout.slots", 40},
+                                                            {"layout.paddingMasks", 52},
+                                                            {"layout.pad", 76},
+                                                            {"width", 80},
+                                                            {"height", 84}};
         CHECK(offsets == expected);
     }
 

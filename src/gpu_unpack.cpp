@@ -1,17 +1,17 @@
 #include "gpu_unpack.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <memory>
-#include <optional>
 #include <span>
-#include <string>
-#include <utility>
+#include <string_view>
 
+#include "dvv/base/error.h"
 #include "dvv/base/json.h"
+#include "dvv/media/pixel_format.h"
+#include "dvv/media/sample_grid.h"
 #include "dvv_media_shaders/unpack.h"
 #include "image_format_name.h"
 
@@ -44,65 +44,9 @@ VkFormat unpackedImageFormat(const ComponentDesc& component) noexcept {
 
 Result<UnpackPush> unpackPush(FormatId format, std::uint32_t width, std::uint32_t height,
                               std::size_t component, std::uint64_t base) {
-    const PixelFormatDesc& d = formatDesc(format);
-    // The plane that holds the component's samples, and those samples sorted by index.
-    std::optional<std::size_t> plane;
-    std::array<SampleSlot, MAX_SLOTS> slots{};
-    std::size_t n = 0;
-    for (std::size_t p = 0; p < d.planeCount; ++p) {
-        const PlaneDesc& candidate = d.planes[p];
-        for (std::size_t s = 0; s < candidate.slotCount; ++s) {
-            if (candidate.slots[s].component != component) {
-                continue;
-            }
-            if (plane.has_value() && *plane != p) {
-                return makeError(Errc::Internal,
-                                 std::format("unpack: component {} of {} spans planes {} and {}",
-                                             component, d.name, *plane, p));
-            }
-            plane = p;
-            slots[n++] = candidate.slots[s];
-        }
-    }
-    if (!plane.has_value() || component >= d.componentCount) {
-        return makeError(Errc::Internal, std::format("unpack: component {} of {} has no samples",
-                                                     component, d.name));
-    }
-    std::ranges::sort(std::span(slots).first(n), {}, &SampleSlot::index);
-    const PlaneDesc& plane_desc = d.planes[*plane];
-    const ComponentDesc& component_desc = d.components[component];
-    bool indexed = true;
-    for (std::size_t k = 0; k < n; ++k) {
-        indexed = indexed && slots[k].index == k;
-    }
-    if (n > MAX_GPU_SLOTS || !indexed ||
-        n != static_cast<std::size_t>(plane_desc.groupPixels >> component_desc.log2SubX)) {
-        return makeError(Errc::Internal,
-                         std::format("unpack: component {} of {} has {} samples per group, which "
-                                     "the GPU unpack cannot read (at most {}, indices 0..n-1, "
-                                     "groupPixels >> log2SubX)",
-                                     component, d.name, n, MAX_GPU_SLOTS));
-    }
-    DVV_TRY(const FrameGeometry frame, geometry(format, width, height));
-
-    UnpackPush push;
-    push.base = base;
-    push.planeOffset = frame.planes[*plane].offset;
-    push.stride = frame.planes[*plane].stride;
-    push.groupBytes = plane_desc.groupBytes;
-    push.wordBytes = plane_desc.wordBytes;
-    push.bigEndian = plane_desc.order == ByteOrder::Big ? 1U : 0U;
-    push.bits = component_desc.bits;
+    DVV_TRY(const StoredWordLayout layout, storedWordLayout(format, width, height, component));
     const auto [grid_width, grid_height] = componentSize(format, component, width, height);
-    push.width = grid_width;
-    push.height = grid_height;
-    push.samplesPerGroup = static_cast<std::uint32_t>(n);
-    for (std::size_t k = 0; k < n; ++k) {
-        const std::uint32_t slot =
-            (std::uint32_t{slots[k].word} << 8U) | std::uint32_t{slots[k].shift};
-        push.slots[k / 2] |= slot << (16U * (k % 2));
-    }
-    return push;
+    return UnpackPush{.base = base, .layout = layout, .width = grid_width, .height = grid_height};
 }
 
 Result<std::shared_ptr<gpu::ComputePipeline>> createUnpackPipeline(gpu::ExecutionContext& context) {
@@ -144,7 +88,7 @@ Result<void> recordUnpack(gpu::CommandRecorder& recorder, const gpu::ComputePipe
                                      buffer.desc().name, offset));
     }
     const std::uint64_t needed = unpackBufferBytes(offset, frame.bytes);
-    if (buffer.size() < needed || needed > (std::uint64_t{1} << 34)) {
+    if (buffer.size() < needed || needed > (std::uint64_t{1} << 34U)) {
         return makeError(Errc::Internal,
                          std::format("unpack: buffer '{}' holds {} bytes; a {}x{} {} frame at "
                                      "offset {} needs {} (frame bytes rounded up to 4, plus 4)",

@@ -8,6 +8,7 @@ add_executable(dvv_media_tests
     neutral_headers/frame_vulkan_h.cpp
     neutral_headers/pixel_format_h.cpp
     neutral_headers/rate_size_text_h.cpp
+    neutral_headers/sample_grid_h.cpp
     neutral_headers/source_h.cpp
     neutral_headers/types_h.cpp
     neutral_headers/view_h.cpp
@@ -29,6 +30,7 @@ add_executable(dvv_media_tests
     test_provider_conformance.cpp
     test_raw_source.cpp
     test_reference.cpp
+    test_sample_grid.cpp
     test_synthetic_source.cpp
     test_to_display.cpp
     test_types.cpp
@@ -111,14 +113,16 @@ if(DVV_SANITIZE STREQUAL "thread")
     list(APPEND gpu_test_environment
          "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
 endif()
-# The probe of shaders/view_lines.slang, which it imports as the exported module
-# dvv_media.view_lines (the way an application's shaders take it).
+# The probes of shaders/view_lines.slang and shaders/sample_grid.slang, which they import as the
+# exported modules dvv_media.view_lines and dvv_media.sample_grid (the way an application's
+# shaders take them).
 add_library(dvv_media_test_shaders STATIC)
 dvv_add_shaders(dvv_media_test_shaders NAMESPACE media_test_shaders
-    SHADERS shaders/view_lines_probe.slang IMPORTS dvv::media)
+    SHADERS shaders/view_lines_probe.slang shaders/sample_grid_probe.slang IMPORTS dvv::media)
 dvv_set_compiler_options(dvv_media_test_shaders)
 add_executable(dvv_media_gpu_tests
-    gpu_main.cpp gpu_fixture.cpp gpu_test_store.cpp gpu_test_to_display.cpp gpu_test_unpack.cpp
+    gpu_main.cpp gpu_fixture.cpp gpu_test_sample_grid.cpp gpu_test_store.cpp gpu_test_to_display.cpp
+    gpu_test_unpack.cpp
     gpu_test_view_lines.cpp store_fakes.cpp)
 target_link_libraries(dvv_media_gpu_tests PRIVATE dvv::media dvv_media_test_shaders
                                                   doctest::doctest)

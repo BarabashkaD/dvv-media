@@ -12,7 +12,8 @@ find_dependency(dvv_platform @dvv_platform_MIN_VERSION@)
 find_dependency(dvv_gpu @dvv_gpu_MIN_VERSION@)
 
 include("${CMAKE_CURRENT_LIST_DIR}/dvv_mediaTargets.cmake")
-# The exported Slang sources (dvv_media.view_lines) for dvv_add_shaders(... IMPORTS dvv::media).
+# The exported Slang sources (dvv_media.view_lines, dvv_media.sample_grid) for
+# dvv_add_shaders(... IMPORTS dvv::media).
 dvv_import_shader_sources(dvv::media PREFIX "${PACKAGE_PREFIX_DIR}")
 
 check_required_components(dvv_media)

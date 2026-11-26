@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(dvv_media VERSION 0.7.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
+project(dvv_media VERSION 0.8.0 DESCRIPTION "dvv media layer" LANGUAGES CXX)
 # Version string; a pre-release build adds its release-stage label (user decision U-M4ORDER).
 set(dvv_media_VERSION_STRING "${PROJECT_VERSION}")
 
@@ -43,6 +43,7 @@ add_library(dvv_media STATIC
     src/pixel_format.cpp
     src/planner.cpp
     src/reference.cpp
+    src/sample_grid.cpp
     src/source_factory.cpp
     src/sources/uri_params.cpp
     src/to_display.cpp
@@ -68,9 +69,10 @@ set_source_files_properties(src/view_lines.cpp PROPERTIES
 # dvv_media_shaders::unpack() and dvv_media_shaders::toDisplay().
 dvv_add_shaders(dvv_media NAMESPACE dvv_media_shaders
     SHADERS shaders/unpack.slang shaders/to_display.slang)
-# The line rule for shaders (dvv/media/view_lines.h): applications' shaders `import
-# dvv_media.view_lines;` with dvv_add_shaders(... IMPORTS dvv::media).
-dvv_export_shader_sources(dvv_media SOURCES shaders/view_lines.slang)
+# The line rule (dvv/media/view_lines.h) and the sample grid (dvv/media/sample_grid.h) for shaders:
+# applications' shaders `import dvv_media.view_lines;` and `import dvv_media.sample_grid;` with
+# dvv_add_shaders(... IMPORTS dvv::media).
+dvv_export_shader_sources(dvv_media SOURCES shaders/view_lines.slang shaders/sample_grid.slang)
 
 # Built-in source providers (D1): a component library. Consumers link it only with
 # dvv_link_components(<target> dvv::media_sources), so the DVV_REGISTER lines survive linking.
