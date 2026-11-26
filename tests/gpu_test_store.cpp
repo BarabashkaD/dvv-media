@@ -749,3 +749,31 @@ TEST_CASE_FIXTURE(GpuTest,
     }
     REQUIRE(media::detail::StoreAccess::checkInvariants(*store).has_value());
 }
+
+TEST_CASE_FIXTURE(GpuTest,
+                  "store gpu: planes and original views after a display acquire reuse its "
+                  "entries") {
+    const FrameDesc desc{.format = idOf("yuv420p10le"), .colour = 0, .width = 64, .height = 48};
+    const GpuStore test(*this, desc, 1);
+    const auto layout = media::geometry(desc.format, desc.width, desc.height);
+    REQUIRE(layout.has_value());
+
+    const ReadLease display = test.take(0, media::displayView(test.device), executor());
+    const auto before = test.store->stats();
+    CHECK(runsOf(before, "Upload") == 1);
+    CHECK(runsOf(before, "GpuUnpack") == 1);
+
+    // Still holding the display view: the planes and the raw buffer come from the same entries.
+    const ReadLease planes =
+        test.take(0, media::planesView(desc, media::vulkan::IMAGE, test.device), executor());
+    const ReadLease original =
+        test.take(0, media::originalView(desc, media::vulkan::BUFFER, test.device), executor());
+    const auto after = test.store->stats();
+    CHECK(runsOf(after, "Upload") == 1);
+    CHECK(runsOf(after, "GpuUnpack") == 1);
+    CHECK(after.hits >= before.hits + 2);
+    const gpu::GpuBuffer* raw = media::vulkan::buffer(original);
+    REQUIRE(raw != nullptr);
+    CHECK(raw->size() >= layout->bytes + 4);
+    CHECK(media::vulkan::image(planes, 0) != nullptr);
+}

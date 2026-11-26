@@ -4,6 +4,9 @@
 // EETF, 1000 -> 100 nits), clamps and stores linear RGBA16F: RGB and the frame's straight,
 // full-range alpha (1 without A). The primaries are information only (D5R §2.1): no gamut
 // conversion. Must match dvv::media::toDisplayReference (display.cpp) formula by formula.
+
+import sample_grid;
+
 struct ToDisplayPush
 {
     float4 row0;          // R' = dot(row0.xyz, c) + row0.w
@@ -53,7 +56,7 @@ uint readPlane(uint binding, uint2 at)
 float codeValue(uint k, uint2 pixel)
 {
     const uint layout = pc.planeLayout[k];
-    const uint2 at = uint2(pixel.x >> (layout & 15u), pixel.y >> ((layout >> 4u) & 15u));
+    const uint2 at = dvv::media::sampleOf(pixel, layout & 15u, (layout >> 4u) & 15u);
     return float(readPlane((layout >> 8u) & 15u, at));
 }
 

@@ -402,5 +402,5 @@ TEST_CASE_FIXTURE(GpuTest, "the unpack pipeline binds one storage image") {
     REQUIRE_MESSAGE(pipeline.has_value(),
                     (pipeline.has_value() ? std::string{} : pipeline.error().describe()));
     CHECK((*pipeline)->bindings().storageImages == 1);
-    CHECK((*pipeline)->pushConstantSize() == 64);
+    CHECK((*pipeline)->pushConstantSize() == 88);
 }

@@ -6,6 +6,22 @@ the dvv rules: compatible = the same 0.minor and at least the minimum version; a
 unused API is removed in the next 0.x minor, with no deprecation period. This file is the release
 notes (there are no GitHub Releases).
 
+## [0.8.0] - 2026-11-26
+
+### Added
+- `dvv/media/sample_grid.h` and `shaders/sample_grid.slang` (`import dvv_media.sample_grid;`): the
+  sample grid of a component, one rule for the CPU and shaders. `sampleOf` gives the sample of a
+  subsampled component an image pixel belongs to (nearest, a shift per axis) and `blockOf` the
+  image pixels a sample covers (empty outside the component's grid). ToDisplay reads its planes
+  with it.
+- Stored words and padding masks: `StoredWord`, `storedWord(format, width, height, component,
+  sample)` (the word, the sample's shift and bits, and the padding mask of a sample in the original
+  bytes), `readStoredWord`, `codeOf`, and `StoredWordLayout` with `storedWordLayout()` (the same
+  rule as shader data, 72 bytes). The GPU unpack reads the stored words through them.
+
+### Changed
+- The dvv-build minimum is 0.6.1; dvv-media requires dvv-gpu 0.7.0.
+
 ## [0.7.0] - 2026-11-26
 
 ### Added
